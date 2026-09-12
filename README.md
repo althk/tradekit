@@ -44,13 +44,22 @@ Go modules are split only where a heavy third-party dependency justifies it.
 `core` has no dependency beyond the standard library, so a screener that needs
 indicators and charge maths pulls in no SQLite driver and no broker SDK.
 
-## Using this from another project
+## How to use this repo
 
 Each directory under `go/` is its own Go module (its own `go.mod`, its own
 `github.com/althk/tradekit/go/<name>` import path), and everything under `py/`
 is one Python distribution. That split exists so a consumer only pulls in
 what it needs — a screener that wants indicators and cost maths doesn't drag
 in a SQLite driver or a broker SDK.
+
+### Examples
+
+[tradekit-example](https://github.com/althk/tradekit-example) has two small
+golden-cross bots — one in Go against the `zerodha` adapter, one in Python
+against `upstox` — showing the pieces above wired together: risk sizing and
+gates, cost estimation, SQLite persistence, the decision journal, config via
+`harness`, and (Go only) a backtest mode through `core/paper` and
+`go/backtest`.
 
 ### Go
 
