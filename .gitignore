@@ -1,0 +1,39 @@
+# Go
+*.exe
+*.test
+/bin/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Local config and credentials -- never commit a token
+*.local.toml
+.env
+.kite_token.json
+.upstox_token
+
+# Vendored dependencies. Vendoring is used to make a broker SDK's source
+# readable in environments that cannot reach the module proxy; the module cache
+# remains the source of truth.
+go/*/vendor/
+
+# Scratch API dumps used while writing an adapter.
+kite-api.txt
+upstox-api.txt
+
+# Data
+*.db
+*.db-shm
+*.db-wal
+
+# Project files
+specs/
+CLAUDE.md

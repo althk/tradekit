@@ -1,0 +1,2063 @@
+{
+  "_comment": [
+    "Golden cases run by BOTH go/core and py/tradekit. When the two libraries",
+    "disagree about anything in this file, one of them is wrong and CI says so.",
+    "Values are in minor units (paise/cents) unless a field name says otherwise.",
+    "Rates here are invented round numbers chosen so every expected figure can",
+    "be verified by hand -- they are not anyone's real rate card."
+  ],
+  "money_parse": [
+    {
+      "text": "0",
+      "want": 0
+    },
+    {
+      "text": "1",
+      "want": 100
+    },
+    {
+      "text": "1.5",
+      "want": 150
+    },
+    {
+      "text": "1.05",
+      "want": 105
+    },
+    {
+      "text": "1234.56",
+      "want": 123456
+    },
+    {
+      "text": "-0.05",
+      "want": -5
+    },
+    {
+      "text": "-1234.56",
+      "want": -123456
+    },
+    {
+      "text": "+7.25",
+      "want": 725
+    },
+    {
+      "text": ".5",
+      "want": 50
+    }
+  ],
+  "money_parse_invalid": [
+    "",
+    "abc",
+    "1.234",
+    "1.2.3",
+    "--1",
+    "1e5"
+  ],
+  "money_mul_fraction": [
+    {
+      "amount": 100,
+      "fraction": 0.005,
+      "want": 1
+    },
+    {
+      "amount": 100,
+      "fraction": 0.015,
+      "want": 2
+    },
+    {
+      "amount": 100,
+      "fraction": 0.025,
+      "want": 3
+    },
+    {
+      "amount": -100,
+      "fraction": 0.025,
+      "want": -3
+    },
+    {
+      "amount": 123456,
+      "fraction": 0.001,
+      "want": 123
+    }
+  ],
+  "money_round_to_tick": [
+    {
+      "amount": 100,
+      "tick": 5,
+      "want": 100
+    },
+    {
+      "amount": 102,
+      "tick": 5,
+      "want": 100
+    },
+    {
+      "amount": 103,
+      "tick": 5,
+      "want": 105
+    },
+    {
+      "amount": 1237,
+      "tick": 5,
+      "want": 1235
+    },
+    {
+      "amount": 1238,
+      "tick": 5,
+      "want": 1240
+    },
+    {
+      "amount": -102,
+      "tick": 5,
+      "want": -100
+    },
+    {
+      "amount": -103,
+      "tick": 5,
+      "want": -105
+    }
+  ],
+  "money_floor_ceil_to_tick": [
+    {
+      "amount": 103,
+      "tick": 5,
+      "floor": 100,
+      "ceil": 105
+    },
+    {
+      "amount": 100,
+      "tick": 5,
+      "floor": 100,
+      "ceil": 100
+    },
+    {
+      "amount": -103,
+      "tick": 5,
+      "floor": -105,
+      "ceil": -100
+    }
+  ],
+  "sizing": [
+    {
+      "name": "plain risk budget",
+      "capital": 10000000,
+      "risk_fraction": 0.01,
+      "entry": 50000,
+      "stop": 49000,
+      "lot_size": 0,
+      "max_notional": 0,
+      "leverage": 0,
+      "want_quantity": 100
+    },
+    {
+      "name": "short sizes identically to a long with the same stop distance",
+      "capital": 10000000,
+      "risk_fraction": 0.01,
+      "entry": 50000,
+      "stop": 51000,
+      "lot_size": 0,
+      "max_notional": 0,
+      "leverage": 0,
+      "want_quantity": 100
+    },
+    {
+      "name": "notional cap binds before the risk budget",
+      "capital": 10000000,
+      "risk_fraction": 0.01,
+      "entry": 50000,
+      "stop": 49000,
+      "lot_size": 0,
+      "max_notional": 1000000,
+      "leverage": 0,
+      "want_quantity": 20
+    },
+    {
+      "name": "a cash account cannot exceed its own capital",
+      "capital": 1000000,
+      "risk_fraction": 0.1,
+      "entry": 50000,
+      "stop": 49500,
+      "lot_size": 0,
+      "max_notional": 0,
+      "leverage": 0,
+      "want_quantity": 20
+    },
+    {
+      "name": "leverage widens buying power",
+      "capital": 1000000,
+      "risk_fraction": 0.1,
+      "entry": 50000,
+      "stop": 49500,
+      "lot_size": 0,
+      "max_notional": 0,
+      "leverage": 5,
+      "want_quantity": 100
+    },
+    {
+      "name": "floored to whole lots",
+      "capital": 1370000,
+      "risk_fraction": 0.1,
+      "entry": 50000,
+      "stop": 49000,
+      "lot_size": 50,
+      "max_notional": 0,
+      "leverage": 100,
+      "want_quantity": 100
+    },
+    {
+      "name": "below one lot sizes to zero, never to a fraction",
+      "capital": 100000,
+      "risk_fraction": 0.01,
+      "entry": 50000,
+      "stop": 49000,
+      "lot_size": 50,
+      "max_notional": 0,
+      "leverage": 0,
+      "want_quantity": 0
+    },
+    {
+      "name": "entry equal to stop has no risk per unit",
+      "capital": 10000000,
+      "risk_fraction": 0.01,
+      "entry": 50000,
+      "stop": 50000,
+      "lot_size": 0,
+      "max_notional": 0,
+      "leverage": 0,
+      "want_quantity": 0
+    }
+  ],
+  "charges": {
+    "broker": "testbroker",
+    "segment": "equity_delivery",
+    "rates": {
+      "brokerage": 0.001,
+      "stt_buy": 0.001,
+      "stt_sell": 0.001,
+      "exchange": 0.0001,
+      "sebi": 0.0001,
+      "stamp": 0.0001,
+      "gst": 0.18,
+      "dp_flat": 1500
+    },
+    "effective_from": "2020-01-01",
+    "cases": [
+      {
+        "name": "long round trip",
+        "quantity": 100,
+        "entry_price": 10000,
+        "exit_price": 11000,
+        "entry_at": "2026-01-05",
+        "exit_at": "2026-01-09",
+        "buying": true,
+        "want": {
+          "brokerage": 2100,
+          "stt": 2100,
+          "exchange": 210,
+          "sebi": 210,
+          "stamp": 100,
+          "dp": 1500,
+          "gst": 724,
+          "total": 6944
+        }
+      },
+      {
+        "name": "short round trip pays stamp duty on its buy-back leg",
+        "quantity": 100,
+        "entry_price": 10000,
+        "exit_price": 11000,
+        "entry_at": "2026-01-05",
+        "exit_at": "2026-01-09",
+        "buying": false,
+        "want": {
+          "brokerage": 2100,
+          "stt": 2100,
+          "exchange": 210,
+          "sebi": 210,
+          "stamp": 110,
+          "dp": 1500,
+          "gst": 724,
+          "total": 6954
+        }
+      },
+      {
+        "name": "open position (no exit) pays no DP and no GST on it",
+        "quantity": 100,
+        "entry_price": 10000,
+        "exit_price": 0,
+        "entry_at": "2026-01-05",
+        "exit_at": "2026-01-05",
+        "buying": true,
+        "want": {
+          "brokerage": 1000,
+          "stt": 1000,
+          "exchange": 100,
+          "sebi": 100,
+          "stamp": 100,
+          "dp": 0,
+          "gst": 216,
+          "total": 2516
+        }
+      }
+    ]
+  },
+  "stats": {
+    "_comment": "net P&L per trade, in minor units, in exit order",
+    "net_pnls": [
+      10000,
+      -5000,
+      20000,
+      -5000
+    ],
+    "want": {
+      "trades": 4,
+      "wins": 2,
+      "losses": 2,
+      "gross_profit": 30000,
+      "gross_loss": 10000,
+      "net_pnl": 20000,
+      "win_rate": 0.5,
+      "profit_factor": 3.0,
+      "expectancy": 5000,
+      "avg_win": 15000,
+      "avg_loss": 5000,
+      "max_drawdown": 5000
+    }
+  },
+  "fills": {
+    "_comment": [
+      "The bar-replay fill rules. Four projects implemented these independently",
+      "and agreed on the tie-break; this pins them so both libraries' paper",
+      "brokers resolve an ambiguous bar identically.",
+      "side is the side of the POSITION. stop/target of 0 mean the leg is unset.",
+      "want_reason of '' means the bar triggers nothing."
+    ],
+    "cases": [
+      {
+        "name": "long: bar contains both levels, resolve as the stop",
+        "side": "buy",
+        "stop": 9500,
+        "target": 11000,
+        "open": 10000,
+        "high": 11200,
+        "low": 9400,
+        "close": 10500,
+        "want_price": 9500,
+        "want_reason": "stop"
+      },
+      {
+        "name": "long: gap through the stop fills at the open, not the stop",
+        "side": "buy",
+        "stop": 9500,
+        "target": 0,
+        "open": 9000,
+        "high": 9200,
+        "low": 8800,
+        "close": 9100,
+        "want_price": 9000,
+        "want_reason": "stop"
+      },
+      {
+        "name": "long: target only, stop untouched",
+        "side": "buy",
+        "stop": 9500,
+        "target": 11000,
+        "open": 10100,
+        "high": 11200,
+        "low": 9900,
+        "close": 10800,
+        "want_price": 11000,
+        "want_reason": "target"
+      },
+      {
+        "name": "long: gap through the target fills at the open",
+        "side": "buy",
+        "stop": 9500,
+        "target": 11000,
+        "open": 11500,
+        "high": 11800,
+        "low": 11400,
+        "close": 11600,
+        "want_price": 11500,
+        "want_reason": "target"
+      },
+      {
+        "name": "long: neither level reached",
+        "side": "buy",
+        "stop": 9500,
+        "target": 11000,
+        "open": 10100,
+        "high": 10500,
+        "low": 9900,
+        "close": 10300,
+        "want_price": 0,
+        "want_reason": ""
+      },
+      {
+        "name": "short: bar contains both levels, resolve as the stop",
+        "side": "sell",
+        "stop": 10500,
+        "target": 9000,
+        "open": 10000,
+        "high": 10600,
+        "low": 8900,
+        "close": 9400,
+        "want_price": 10500,
+        "want_reason": "stop"
+      },
+      {
+        "name": "short: gap through the stop fills at the open",
+        "side": "sell",
+        "stop": 10500,
+        "target": 0,
+        "open": 11000,
+        "high": 11200,
+        "low": 10800,
+        "close": 11100,
+        "want_price": 11000,
+        "want_reason": "stop"
+      },
+      {
+        "name": "short: target only",
+        "side": "sell",
+        "stop": 10500,
+        "target": 9000,
+        "open": 9900,
+        "high": 10100,
+        "low": 8800,
+        "close": 9200,
+        "want_price": 9000,
+        "want_reason": "target"
+      }
+    ]
+  },
+  "upstox": {
+    "_comment": [
+      "Upstox adapter mapping, run by go/upstox/parity_test.go and",
+      "py/tests/test_upstox.py. These are the conversions both clients must agree",
+      "on: an instrument key one formats and the other cannot parse, or a status",
+      "one calls terminal and the other calls open, is a Python screener and a Go",
+      "executor disagreeing about the same live order."
+    ],
+    "instrument_key": [
+      {
+        "exchange": "NSE",
+        "id": "INE002A01018",
+        "want": "NSE_EQ|INE002A01018"
+      },
+      {
+        "exchange": "BSE",
+        "id": "INE002A01018",
+        "want": "BSE_EQ|INE002A01018"
+      },
+      {
+        "exchange": "NFO",
+        "id": "54321",
+        "want": "NSE_FO|54321"
+      },
+      {
+        "exchange": "NSE_EQ",
+        "id": "INE467B01029",
+        "want": "NSE_EQ|INE467B01029"
+      },
+      {
+        "exchange": "NSE_FO",
+        "id": "47983|17-04-2025",
+        "want": "NSE_FO|47983|17-04-2025"
+      }
+    ],
+    "parse_instrument_key": [
+      {
+        "key": "NSE_EQ|INE002A01018",
+        "segment": "NSE_EQ",
+        "id": "INE002A01018"
+      },
+      {
+        "key": "NSE_INDEX|Nifty 50",
+        "segment": "NSE_INDEX",
+        "id": "Nifty 50"
+      },
+      {
+        "key": "NSE_FO|47983|17-04-2025",
+        "segment": "NSE_FO",
+        "id": "47983|17-04-2025"
+      }
+    ],
+    "parse_instrument_key_invalid": [
+      "",
+      "NSE_EQ",
+      "|INE002A01018",
+      "NSE_EQ|"
+    ],
+    "status": [
+      {
+        "wire": "complete",
+        "want": "complete"
+      },
+      {
+        "wire": "completed",
+        "want": "complete"
+      },
+      {
+        "wire": "rejected",
+        "want": "rejected"
+      },
+      {
+        "wire": "cancelled",
+        "want": "cancelled"
+      },
+      {
+        "wire": "canceled",
+        "want": "cancelled"
+      },
+      {
+        "wire": "open",
+        "want": "open"
+      },
+      {
+        "wire": "open pending",
+        "want": "open"
+      },
+      {
+        "wire": "modify pending",
+        "want": "open"
+      },
+      {
+        "wire": "put order req received",
+        "want": "open"
+      },
+      {
+        "wire": "validation pending",
+        "want": "open"
+      },
+      {
+        "wire": "trigger pending",
+        "want": "triggered"
+      },
+      {
+        "wire": "  COMPLETE  ",
+        "want": "complete"
+      },
+      {
+        "wire": "after market order req received",
+        "want": "pending"
+      },
+      {
+        "wire": "",
+        "want": "pending"
+      }
+    ],
+    "product": [
+      {
+        "domain": "mis",
+        "wire": "I"
+      },
+      {
+        "domain": "cnc",
+        "wire": "D"
+      },
+      {
+        "domain": "nrml",
+        "wire": "D"
+      }
+    ],
+    "product_unsupported": [
+      "margin"
+    ],
+    "from_product": [
+      {
+        "wire": "I",
+        "want": "mis"
+      },
+      {
+        "wire": "D",
+        "want": "nrml"
+      }
+    ],
+    "order_type": [
+      {
+        "domain": "market",
+        "wire": "MARKET"
+      },
+      {
+        "domain": "limit",
+        "wire": "LIMIT"
+      },
+      {
+        "domain": "stop",
+        "wire": "SL-M"
+      },
+      {
+        "domain": "stop_limit",
+        "wire": "SL"
+      }
+    ],
+    "validity": [
+      {
+        "domain": "day",
+        "wire": "DAY"
+      },
+      {
+        "domain": "ioc",
+        "wire": "IOC"
+      },
+      {
+        "domain": "",
+        "wire": "DAY"
+      }
+    ],
+    "validity_unsupported": [
+      "gtt"
+    ],
+    "interval": [
+      {
+        "timeframe": "1m",
+        "unit": "minutes",
+        "interval": 1,
+        "chunk_days": 25
+      },
+      {
+        "timeframe": "3m",
+        "unit": "minutes",
+        "interval": 3,
+        "chunk_days": 60
+      },
+      {
+        "timeframe": "5m",
+        "unit": "minutes",
+        "interval": 5,
+        "chunk_days": 60
+      },
+      {
+        "timeframe": "15m",
+        "unit": "minutes",
+        "interval": 15,
+        "chunk_days": 60
+      },
+      {
+        "timeframe": "30m",
+        "unit": "minutes",
+        "interval": 30,
+        "chunk_days": 60
+      },
+      {
+        "timeframe": "60m",
+        "unit": "hours",
+        "interval": 1,
+        "chunk_days": 180
+      },
+      {
+        "timeframe": "1d",
+        "unit": "days",
+        "interval": 1,
+        "chunk_days": 1800
+      },
+      {
+        "timeframe": "1w",
+        "unit": "weeks",
+        "interval": 1,
+        "chunk_days": 1800
+      }
+    ],
+    "interval_unsupported": [
+      "2m",
+      "4h"
+    ],
+    "paise": [
+      {
+        "rupees": 1057.6,
+        "want": 105760
+      },
+      {
+        "rupees": 1057.605,
+        "want": 105761
+      },
+      {
+        "rupees": -1057.605,
+        "want": -105761
+      },
+      {
+        "rupees": 0.0,
+        "want": 0
+      },
+      {
+        "rupees": 0.005,
+        "want": 1
+      },
+      {
+        "rupees": -0.005,
+        "want": -1
+      }
+    ],
+    "trigger_direction": [
+      {
+        "side": "sell",
+        "stop": "BELOW",
+        "target": "ABOVE"
+      },
+      {
+        "side": "buy",
+        "stop": "ABOVE",
+        "target": "BELOW"
+      }
+    ]
+  },
+  "fyers": {
+    "_comment": [
+      "FYERS adapter mapping, run by go/fyers/parity_test.go and",
+      "py/tests/test_fyers.py. FYERS encodes most enumerations as small integers,",
+      "so a disagreement here is not a misspelt word the broker rejects but a",
+      "different, valid value it accepts: 1 is a limit order and 2 a market order."
+    ],
+    "symbol": [
+      {
+        "exchange": "NSE",
+        "symbol": "SBIN",
+        "want": "NSE:SBIN-EQ"
+      },
+      {
+        "exchange": "BSE",
+        "symbol": "SBIN",
+        "want": "BSE:SBIN-EQ"
+      },
+      {
+        "exchange": "NSE",
+        "symbol": "MODIRUBBER-BE",
+        "want": "NSE:MODIRUBBER-BE"
+      },
+      {
+        "exchange": "NFO",
+        "symbol": "NIFTY24JANFUT",
+        "want": "NSE:NIFTY24JANFUT"
+      },
+      {
+        "exchange": "NFO",
+        "symbol": "NIFTY2410825000CE",
+        "want": "NSE:NIFTY2410825000CE"
+      },
+      {
+        "exchange": "BFO",
+        "symbol": "SENSEX24JANFUT",
+        "want": "BSE:SENSEX24JANFUT"
+      },
+      {
+        "exchange": "CDS",
+        "symbol": "USDINR24JANFUT",
+        "want": "NSE:USDINR24JANFUT"
+      },
+      {
+        "exchange": "MCX",
+        "symbol": "GOLD24DECFUT",
+        "want": "MCX:GOLD24DECFUT"
+      },
+      {
+        "exchange": "NSE",
+        "symbol": "NSE:SBIN-EQ",
+        "want": "NSE:SBIN-EQ"
+      }
+    ],
+    "key": [
+      {
+        "symbol": "NSE:SBIN-EQ",
+        "segment": 10,
+        "exchange": "NSE",
+        "want": "SBIN"
+      },
+      {
+        "symbol": "NSE:SBIN-EQ",
+        "segment": 0,
+        "exchange": "NSE",
+        "want": "SBIN"
+      },
+      {
+        "symbol": "NSE:MODIRUBBER-BE",
+        "segment": 10,
+        "exchange": "NSE",
+        "want": "MODIRUBBER-BE"
+      },
+      {
+        "symbol": "BSE:SBIN-A",
+        "segment": 10,
+        "exchange": "BSE",
+        "want": "SBIN-A"
+      },
+      {
+        "symbol": "NSE:NIFTY24JANFUT",
+        "segment": 11,
+        "exchange": "NFO",
+        "want": "NIFTY24JANFUT"
+      },
+      {
+        "symbol": "NSE:NIFTY24JANFUT",
+        "segment": 0,
+        "exchange": "NFO",
+        "want": "NIFTY24JANFUT"
+      },
+      {
+        "symbol": "BSE:SENSEX24JANFUT",
+        "segment": 11,
+        "exchange": "BFO",
+        "want": "SENSEX24JANFUT"
+      },
+      {
+        "symbol": "NSE:USDINR24JANFUT",
+        "segment": 12,
+        "exchange": "CDS",
+        "want": "USDINR24JANFUT"
+      },
+      {
+        "symbol": "MCX:GOLD24DECFUT",
+        "segment": 20,
+        "exchange": "MCX",
+        "want": "GOLD24DECFUT"
+      },
+      {
+        "symbol": "NSE:NIFTY50-INDEX",
+        "segment": 10,
+        "exchange": "NSE",
+        "want": "NIFTY50-INDEX"
+      },
+      {
+        "symbol": "SBIN",
+        "segment": 0,
+        "exchange": "",
+        "want": "SBIN"
+      }
+    ],
+    "status": [
+      {
+        "wire": 1,
+        "want": "cancelled"
+      },
+      {
+        "wire": 2,
+        "want": "complete"
+      },
+      {
+        "wire": 3,
+        "want": "pending"
+      },
+      {
+        "wire": 4,
+        "want": "pending"
+      },
+      {
+        "wire": 5,
+        "want": "rejected"
+      },
+      {
+        "wire": 6,
+        "want": "open"
+      },
+      {
+        "wire": 7,
+        "want": "cancelled"
+      },
+      {
+        "wire": 0,
+        "want": "pending"
+      },
+      {
+        "wire": 99,
+        "want": "pending"
+      }
+    ],
+    "product": [
+      {
+        "domain": "cnc",
+        "wire": "CNC"
+      },
+      {
+        "domain": "mis",
+        "wire": "INTRADAY"
+      },
+      {
+        "domain": "nrml",
+        "wire": "MARGIN"
+      }
+    ],
+    "product_unsupported": [
+      "margin"
+    ],
+    "from_product": [
+      {
+        "wire": "CNC",
+        "want": "cnc"
+      },
+      {
+        "wire": "INTRADAY",
+        "want": "mis"
+      },
+      {
+        "wire": "MARGIN",
+        "want": "nrml"
+      },
+      {
+        "wire": " cnc ",
+        "want": "cnc"
+      }
+    ],
+    "order_type": [
+      {
+        "domain": "limit",
+        "wire": 1
+      },
+      {
+        "domain": "market",
+        "wire": 2
+      },
+      {
+        "domain": "stop",
+        "wire": 3
+      },
+      {
+        "domain": "stop_limit",
+        "wire": 4
+      }
+    ],
+    "side": [
+      {
+        "domain": "buy",
+        "wire": 1
+      },
+      {
+        "domain": "sell",
+        "wire": -1
+      }
+    ],
+    "validity": [
+      {
+        "domain": "day",
+        "wire": "DAY"
+      },
+      {
+        "domain": "ioc",
+        "wire": "IOC"
+      },
+      {
+        "domain": "",
+        "wire": "DAY"
+      }
+    ],
+    "validity_unsupported": [
+      "gtt"
+    ],
+    "resolution": [
+      {
+        "timeframe": "1m",
+        "resolution": "1",
+        "chunk_days": 90
+      },
+      {
+        "timeframe": "3m",
+        "resolution": "3",
+        "chunk_days": 90
+      },
+      {
+        "timeframe": "5m",
+        "resolution": "5",
+        "chunk_days": 90
+      },
+      {
+        "timeframe": "15m",
+        "resolution": "15",
+        "chunk_days": 90
+      },
+      {
+        "timeframe": "30m",
+        "resolution": "30",
+        "chunk_days": 90
+      },
+      {
+        "timeframe": "60m",
+        "resolution": "60",
+        "chunk_days": 90
+      },
+      {
+        "timeframe": "1d",
+        "resolution": "D",
+        "chunk_days": 360
+      },
+      {
+        "timeframe": "1w",
+        "resolution": "1W",
+        "chunk_days": 360
+      }
+    ],
+    "resolution_unsupported": [
+      "2h",
+      "1M"
+    ],
+    "paise": [
+      {
+        "rupees": 1057.6,
+        "want": 105760
+      },
+      {
+        "rupees": 1057.605,
+        "want": 105761
+      },
+      {
+        "rupees": -1057.605,
+        "want": -105761
+      },
+      {
+        "rupees": 0.0,
+        "want": 0
+      },
+      {
+        "rupees": 0.005,
+        "want": 1
+      },
+      {
+        "rupees": -0.005,
+        "want": -1
+      }
+    ],
+    "gtt_legs": [
+      {
+        "_comment": "leg1 triggers above the market, leg2 below, whichever is the stop",
+        "side": "sell",
+        "stop": 59000,
+        "target": 65000,
+        "leg1": 65000,
+        "leg2": 59000
+      },
+      {
+        "side": "buy",
+        "stop": 2250000,
+        "target": 2150000,
+        "leg1": 2250000,
+        "leg2": 2150000
+      },
+      {
+        "side": "sell",
+        "stop": 59000,
+        "target": 0,
+        "leg1": 59000,
+        "leg2": 0
+      },
+      {
+        "side": "sell",
+        "stop": 0,
+        "target": 65000,
+        "leg1": 65000,
+        "leg2": 0
+      }
+    ],
+    "order_time": [
+      {
+        "wire": "09-Mar-2023 09:34:38",
+        "want": "2023-03-09T09:34:38+05:30"
+      },
+      {
+        "wire": "2023-03-09 09:34:38",
+        "want": "2023-03-09T09:34:38+05:30"
+      },
+      {
+        "wire": "",
+        "want": ""
+      },
+      {
+        "wire": "garbage",
+        "want": ""
+      }
+    ]
+  },
+  "marketdata": {
+    "_comment": [
+      "Market-data arithmetic, run by go/marketdata/parity_test.go and",
+      "py/tests/test_marketdata.py. Chunk boundaries, resampling and the",
+      "corporate-action adjustment are the places two implementations drift",
+      "silently: a one-second overlap re-requests a bar on every run, a",
+      "bucket anchored to the wall clock instead of the open shifts every",
+      "15-minute bar, and a split rounded differently changes every indicator",
+      "over the history. Timestamps are RFC 3339 and compared as instants;",
+      "prices are minor units."
+    ],
+    "chunks": [
+      {
+        "name": "a range that does not divide evenly ends with a short window",
+        "from": "2025-01-01T00:00:00Z",
+        "to": "2025-01-11T00:00:00Z",
+        "span_seconds": 345600,
+        "want": [
+          {
+            "from": "2025-01-01T00:00:00Z",
+            "to": "2025-01-04T23:59:59Z"
+          },
+          {
+            "from": "2025-01-05T00:00:00Z",
+            "to": "2025-01-08T23:59:59Z"
+          },
+          {
+            "from": "2025-01-09T00:00:00Z",
+            "to": "2025-01-11T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "name": "a range ending exactly on a window boundary adds no empty window",
+        "from": "2025-01-01T00:00:00Z",
+        "to": "2025-01-08T23:59:59Z",
+        "span_seconds": 345600,
+        "want": [
+          {
+            "from": "2025-01-01T00:00:00Z",
+            "to": "2025-01-04T23:59:59Z"
+          },
+          {
+            "from": "2025-01-05T00:00:00Z",
+            "to": "2025-01-08T23:59:59Z"
+          }
+        ]
+      },
+      {
+        "name": "a range ending one second into a new window gets a one-second window",
+        "from": "2025-01-01T00:00:00Z",
+        "to": "2025-01-09T00:00:00Z",
+        "span_seconds": 345600,
+        "want": [
+          {
+            "from": "2025-01-01T00:00:00Z",
+            "to": "2025-01-04T23:59:59Z"
+          },
+          {
+            "from": "2025-01-05T00:00:00Z",
+            "to": "2025-01-08T23:59:59Z"
+          },
+          {
+            "from": "2025-01-09T00:00:00Z",
+            "to": "2025-01-09T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "name": "a single instant is one window of that instant",
+        "from": "2025-03-01T09:15:00+05:30",
+        "to": "2025-03-01T09:15:00+05:30",
+        "span_seconds": 60,
+        "want": [
+          {
+            "from": "2025-03-01T09:15:00+05:30",
+            "to": "2025-03-01T09:15:00+05:30"
+          }
+        ]
+      },
+      {
+        "name": "a one-second span yields one-second windows with no gap",
+        "from": "2025-01-01T00:00:00Z",
+        "to": "2025-01-01T00:00:02Z",
+        "span_seconds": 1,
+        "want": [
+          {
+            "from": "2025-01-01T00:00:00Z",
+            "to": "2025-01-01T00:00:00Z"
+          },
+          {
+            "from": "2025-01-01T00:00:01Z",
+            "to": "2025-01-01T00:00:01Z"
+          },
+          {
+            "from": "2025-01-01T00:00:02Z",
+            "to": "2025-01-01T00:00:02Z"
+          }
+        ]
+      },
+      {
+        "name": "an inverted range is empty, not an error",
+        "from": "2025-01-11T00:00:00Z",
+        "to": "2025-01-01T00:00:00Z",
+        "span_seconds": 345600,
+        "want": []
+      },
+      {
+        "name": "a zero span is empty rather than an infinite loop",
+        "from": "2025-01-01T00:00:00Z",
+        "to": "2025-01-11T00:00:00Z",
+        "span_seconds": 0,
+        "want": []
+      }
+    ],
+    "resample": {
+      "_comment": [
+        "NSE session (09:15-15:30 IST). The second 15-minute group is",
+        "partial and the last bar is the next session, which must open a",
+        "new group rather than fold into the previous one. Open interest",
+        "takes the last value, not the sum."
+      ],
+      "session": "NSE",
+      "from": "5m",
+      "input": [
+        {
+          "start": "2025-04-17T09:15:00+05:30",
+          "open": 10000,
+          "high": 10150,
+          "low": 9950,
+          "close": 10100,
+          "volume": 100,
+          "open_interest": 500
+        },
+        {
+          "start": "2025-04-17T09:20:00+05:30",
+          "open": 10100,
+          "high": 10300,
+          "low": 10050,
+          "close": 10250,
+          "volume": 150,
+          "open_interest": 520
+        },
+        {
+          "start": "2025-04-17T09:25:00+05:30",
+          "open": 10250,
+          "high": 10280,
+          "low": 10000,
+          "close": 10050,
+          "volume": 120,
+          "open_interest": 510
+        },
+        {
+          "start": "2025-04-17T09:30:00+05:30",
+          "open": 10050,
+          "high": 10100,
+          "low": 9900,
+          "close": 9950,
+          "volume": 200,
+          "open_interest": 530
+        },
+        {
+          "start": "2025-04-17T09:35:00+05:30",
+          "open": 9950,
+          "high": 10000,
+          "low": 9800,
+          "close": 9900,
+          "volume": 80,
+          "open_interest": 525
+        },
+        {
+          "start": "2025-04-18T09:15:00+05:30",
+          "open": 9900,
+          "high": 9950,
+          "low": 9850,
+          "close": 9925,
+          "volume": 50,
+          "open_interest": 540
+        }
+      ],
+      "cases": [
+        {
+          "to": "15m",
+          "want": [
+            {
+              "start": "2025-04-17T09:15:00+05:30",
+              "open": 10000,
+              "high": 10300,
+              "low": 9950,
+              "close": 10050,
+              "volume": 370,
+              "open_interest": 510
+            },
+            {
+              "start": "2025-04-17T09:30:00+05:30",
+              "open": 10050,
+              "high": 10100,
+              "low": 9800,
+              "close": 9900,
+              "volume": 280,
+              "open_interest": 525
+            },
+            {
+              "start": "2025-04-18T09:15:00+05:30",
+              "open": 9900,
+              "high": 9950,
+              "low": 9850,
+              "close": 9925,
+              "volume": 50,
+              "open_interest": 540
+            }
+          ]
+        },
+        {
+          "to": "1d",
+          "want": [
+            {
+              "start": "2025-04-17T00:00:00+05:30",
+              "open": 10000,
+              "high": 10300,
+              "low": 9800,
+              "close": 9900,
+              "volume": 650,
+              "open_interest": 525
+            },
+            {
+              "start": "2025-04-18T00:00:00+05:30",
+              "open": 9900,
+              "high": 9950,
+              "low": 9850,
+              "close": 9925,
+              "volume": 50,
+              "open_interest": 540
+            }
+          ]
+        },
+        {
+          "to": "5m",
+          "want": [
+            {
+              "start": "2025-04-17T09:15:00+05:30",
+              "open": 10000,
+              "high": 10150,
+              "low": 9950,
+              "close": 10100,
+              "volume": 100,
+              "open_interest": 500
+            },
+            {
+              "start": "2025-04-17T09:20:00+05:30",
+              "open": 10100,
+              "high": 10300,
+              "low": 10050,
+              "close": 10250,
+              "volume": 150,
+              "open_interest": 520
+            },
+            {
+              "start": "2025-04-17T09:25:00+05:30",
+              "open": 10250,
+              "high": 10280,
+              "low": 10000,
+              "close": 10050,
+              "volume": 120,
+              "open_interest": 510
+            },
+            {
+              "start": "2025-04-17T09:30:00+05:30",
+              "open": 10050,
+              "high": 10100,
+              "low": 9900,
+              "close": 9950,
+              "volume": 200,
+              "open_interest": 530
+            },
+            {
+              "start": "2025-04-17T09:35:00+05:30",
+              "open": 9950,
+              "high": 10000,
+              "low": 9800,
+              "close": 9900,
+              "volume": 80,
+              "open_interest": 525
+            },
+            {
+              "start": "2025-04-18T09:15:00+05:30",
+              "open": 9900,
+              "high": 9950,
+              "low": 9850,
+              "close": 9925,
+              "volume": 50,
+              "open_interest": 540
+            }
+          ]
+        }
+      ],
+      "invalid": [
+        {
+          "from": "15m",
+          "to": "5m"
+        },
+        {
+          "from": "1d",
+          "to": "5m"
+        },
+        {
+          "from": "5m",
+          "to": "3m"
+        },
+        {
+          "from": "3m",
+          "to": "5m"
+        },
+        {
+          "from": "1w",
+          "to": "1d"
+        }
+      ]
+    },
+    "adjust": [
+      {
+        "name": "a split divides pre-ex prices and multiplies volume; the ex-date's own midnight bar is untouched",
+        "candles": [
+          {
+            "start": "2025-04-15T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-17",
+            "kind": "split",
+            "ratio": 10,
+            "amount": 0
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-15T00:00:00+05:30",
+            "open": 10000,
+            "high": 10000,
+            "low": 10000,
+            "close": 10000,
+            "volume": 1000,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 10000,
+            "high": 10000,
+            "low": 10000,
+            "close": 10000,
+            "volume": 1000,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "a 1:3 split rounds each price half away from zero",
+        "candles": [
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 100000,
+            "high": 100007,
+            "low": 99998,
+            "close": 100004,
+            "volume": 101,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 33335,
+            "high": 33335,
+            "low": 33335,
+            "close": 33335,
+            "volume": 300,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-17",
+            "kind": "split",
+            "ratio": 3,
+            "amount": 0
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 33333,
+            "high": 33336,
+            "low": 33333,
+            "close": 33335,
+            "volume": 303,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 33335,
+            "high": 33335,
+            "low": 33335,
+            "close": 33335,
+            "volume": 300,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "a 3:2 bonus adjusts like a split with a fractional ratio, volume rounding half up",
+        "candles": [
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 100000,
+            "high": 100001,
+            "low": 100000,
+            "close": 100000,
+            "volume": 101,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 40000,
+            "high": 40000,
+            "low": 40000,
+            "close": 40000,
+            "volume": 250,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-17",
+            "kind": "bonus",
+            "ratio": 2.5,
+            "amount": 0
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 40000,
+            "high": 40000,
+            "low": 40000,
+            "close": 40000,
+            "volume": 253,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 40000,
+            "high": 40000,
+            "low": 40000,
+            "close": 40000,
+            "volume": 250,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "a dividend scales prices by (close - amount) / close of the last bar before the ex-date and leaves volume alone",
+        "candles": [
+          {
+            "start": "2025-04-15T00:00:00+05:30",
+            "open": 99990,
+            "high": 100010,
+            "low": 99980,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 120000,
+            "high": 120000,
+            "low": 120000,
+            "close": 120000,
+            "volume": 200,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 118000,
+            "high": 118000,
+            "low": 118000,
+            "close": 118000,
+            "volume": 300,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-17",
+            "kind": "dividend",
+            "ratio": 1,
+            "amount": 300
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-15T00:00:00+05:30",
+            "open": 99740,
+            "high": 99760,
+            "low": 99730,
+            "close": 99750,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 119700,
+            "high": 119700,
+            "low": 119700,
+            "close": 119700,
+            "volume": 200,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 118000,
+            "high": 118000,
+            "low": 118000,
+            "close": 118000,
+            "volume": 300,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "a dividend at or above the reference close is a data error and leaves the series unadjusted",
+        "candles": [
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 1000,
+            "high": 1000,
+            "low": 1000,
+            "close": 1000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 1000,
+            "high": 1000,
+            "low": 1000,
+            "close": 1000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-17",
+            "kind": "dividend",
+            "ratio": 1,
+            "amount": 5000
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 1000,
+            "high": 1000,
+            "low": 1000,
+            "close": 1000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 1000,
+            "high": 1000,
+            "low": 1000,
+            "close": 1000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "two splits compound in ex-date order however they are supplied",
+        "candles": [
+          {
+            "start": "2025-01-10T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-08-20T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-08-20",
+            "kind": "split",
+            "ratio": 2,
+            "amount": 0
+          },
+          {
+            "ex_date": "2025-04-17",
+            "kind": "split",
+            "ratio": 2,
+            "amount": 0
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-01-10T00:00:00+05:30",
+            "open": 25000,
+            "high": 25000,
+            "low": 25000,
+            "close": 25000,
+            "volume": 400,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 50000,
+            "high": 50000,
+            "low": 50000,
+            "close": 50000,
+            "volume": 200,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-08-20T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "a split then a dividend: the dividend's reference close is the already split-adjusted one",
+        "candles": [
+          {
+            "start": "2025-04-15T00:00:00+05:30",
+            "open": 200000,
+            "high": 200000,
+            "low": 200000,
+            "close": 200000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 99000,
+            "high": 99000,
+            "low": 99000,
+            "close": 99000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-16",
+            "kind": "split",
+            "ratio": 2,
+            "amount": 0
+          },
+          {
+            "ex_date": "2025-04-17",
+            "kind": "dividend",
+            "ratio": 1,
+            "amount": 1000
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-15T00:00:00+05:30",
+            "open": 99000,
+            "high": 99000,
+            "low": 99000,
+            "close": 99000,
+            "volume": 200,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-16T00:00:00+05:30",
+            "open": 99000,
+            "high": 99000,
+            "low": 99000,
+            "close": 99000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T00:00:00+05:30",
+            "open": 99000,
+            "high": 99000,
+            "low": 99000,
+            "close": 99000,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ]
+      },
+      {
+        "name": "intraday bars on the ex-date itself are untouched, morning and afternoon alike",
+        "candles": [
+          {
+            "start": "2025-04-16T15:25:00+05:30",
+            "open": 100000,
+            "high": 100000,
+            "low": 100000,
+            "close": 100000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T09:15:00+05:30",
+            "open": 10000,
+            "high": 10000,
+            "low": 10000,
+            "close": 10000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T15:25:00+05:30",
+            "open": 10100,
+            "high": 10100,
+            "low": 10100,
+            "close": 10100,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ],
+        "actions": [
+          {
+            "ex_date": "2025-04-17",
+            "kind": "split",
+            "ratio": 10,
+            "amount": 0
+          }
+        ],
+        "want": [
+          {
+            "start": "2025-04-16T15:25:00+05:30",
+            "open": 10000,
+            "high": 10000,
+            "low": 10000,
+            "close": 10000,
+            "volume": 1000,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T09:15:00+05:30",
+            "open": 10000,
+            "high": 10000,
+            "low": 10000,
+            "close": 10000,
+            "volume": 100,
+            "open_interest": 0
+          },
+          {
+            "start": "2025-04-17T15:25:00+05:30",
+            "open": 10100,
+            "high": 10100,
+            "low": 10100,
+            "close": 10100,
+            "volume": 100,
+            "open_interest": 0
+          }
+        ]
+      }
+    ]
+  },
+  "config": {
+    "_comment": [
+      "Config overlay semantics, run by go/harness/config_test.go and",
+      "py/tests/harness/test_config.py. Each suite declares the same shape",
+      "(name; broker.api_key, broker.api_secret; risk.max_positions,",
+      "risk.risk_fraction) with the env names below, loads the TOML with",
+      "exactly these variables set, and checks the resolved values.",
+      "'Empty string means unset' is a choice each language would otherwise",
+      "make differently, which is why the empty overrides are here."
+    ],
+    "env_names": {
+      "name": "TK_NAME",
+      "broker.api_key": "TK_BROKER_API_KEY",
+      "broker.api_secret": "TK_BROKER_API_SECRET",
+      "risk.max_positions": "TK_RISK_MAX_POSITIONS"
+    },
+    "required": [
+      "name",
+      "broker.api_key"
+    ],
+    "cases": [
+      {
+        "name": "env wins over the file; an empty variable leaves the file's value alone",
+        "toml": "name = \"from-file\"\n\n[broker]\napi_key = \"file-key\"\napi_secret = \"file-secret\"\n\n[risk]\nmax_positions = 3\nrisk_fraction = 0.01\n",
+        "env": {
+          "TK_BROKER_API_KEY": "env-key",
+          "TK_RISK_MAX_POSITIONS": "5",
+          "TK_NAME": "",
+          "TK_BROKER_API_SECRET": ""
+        },
+        "want": {
+          "name": "from-file",
+          "broker.api_key": "env-key",
+          "broker.api_secret": "file-secret",
+          "risk.max_positions": 5,
+          "risk.risk_fraction": 0.01
+        }
+      },
+      {
+        "name": "a required field can be satisfied by the environment alone",
+        "toml": "[broker]\napi_secret = \"file-secret\"\n",
+        "env": {
+          "TK_NAME": "env-name",
+          "TK_BROKER_API_KEY": "env-key"
+        },
+        "want": {
+          "name": "env-name",
+          "broker.api_key": "env-key",
+          "broker.api_secret": "file-secret",
+          "risk.max_positions": 0,
+          "risk.risk_fraction": 0.0
+        }
+      },
+      {
+        "name": "every missing required field is named in one error",
+        "toml": "[risk]\nmax_positions = 2\n",
+        "env": {
+          "TK_NAME": ""
+        },
+        "want_missing": [
+          "broker.api_key",
+          "name"
+        ]
+      }
+    ]
+  },
+  "journal": {
+    "_comment": [
+      "Decision journal row encoding, run by go/harness/journal_test.go and",
+      "py/tests/harness/test_journal.py. A Go project and a Python project",
+      "pointed at the same database must write rows the other can read, and",
+      "detail_json must be byte-identical for the same decision: compact,",
+      "keys sorted, HTML and non-ASCII left unescaped."
+    ],
+    "decision": {
+      "run_id": 7,
+      "at": "2025-04-17T09:20:00+05:30",
+      "exchange": "NSE",
+      "symbol": "RELIANCE",
+      "action": "skip",
+      "reason": "kill switch engaged",
+      "detail": {
+        "zeta": true,
+        "alpha": {
+          "nested": [
+            1,
+            2,
+            "three"
+          ],
+          "b": null
+        },
+        "count": 3,
+        "price": 1250.5,
+        "note": "a<b & c, \u20b91,000"
+      }
+    },
+    "want_detail_json": "{\"alpha\":{\"b\":null,\"nested\":[1,2,\"three\"]},\"count\":3,\"note\":\"a<b & c, \u20b91,000\",\"price\":1250.5,\"zeta\":true}"
+  },
+  "options": {
+    "_comment": "Black-Scholes with the carry terms zerobha runs. Tolerance 1e-6 relative; the IV inversion stops at 1e-6 absolute.",
+    "risk_free": 0.065,
+    "div_yield": 0.012,
+    "cases": [
+      {
+        "name": "ITM call price",
+        "op": "price",
+        "s": 24300,
+        "k": 24100,
+        "t": 0.00821917808219178,
+        "sigma": 0.12,
+        "call": true,
+        "want": 242.128816992
+      },
+      {
+        "name": "ITM put price",
+        "op": "price",
+        "s": 24300,
+        "k": 24500,
+        "t": 0.00821917808219178,
+        "sigma": 0.12,
+        "call": false,
+        "want": 226.3732410008
+      },
+      {
+        "name": "ITM call delta",
+        "op": "delta",
+        "s": 24300,
+        "k": 24100,
+        "t": 0.00821917808219178,
+        "sigma": 0.12,
+        "call": true,
+        "want": 0.7895541578
+      },
+      {
+        "name": "ITM put delta",
+        "op": "delta",
+        "s": 24300,
+        "k": 24500,
+        "t": 0.00821917808219178,
+        "sigma": 0.12,
+        "call": false,
+        "want": -0.7604388378
+      },
+      {
+        "name": "ATM implied vol from a 150 premium",
+        "op": "implied_vol",
+        "s": 24300,
+        "k": 24300,
+        "t": 0.00821917808219178,
+        "price": 150,
+        "call": true,
+        "want": 0.1646345958
+      },
+      {
+        "name": "0.8-delta call strike",
+        "op": "strike_for_delta",
+        "s": 24300,
+        "t": 0.00821917808219178,
+        "sigma": 0.12,
+        "target": 0.8,
+        "call": true,
+        "want": 24090.4383109968
+      }
+    ]
+  }
+}

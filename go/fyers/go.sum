@@ -1,0 +1,4 @@
+github.com/FyersDev/fyers-go-sdk v1.6.0 h1:IdwZqZQoHWAQj1uUQm4tBGGOogWCxQlMz9ETUMCo79I=
+github.com/FyersDev/fyers-go-sdk v1.6.0/go.mod h1:E0VU14Pc/1vfk13Z3hPHj6Bkgcw5RRx7W9+ayp82a/E=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=

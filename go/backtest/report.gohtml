@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}} — simulated backtest</title>
+<style>
+  :root { --bg:#ffffff; --card:#f8fafc; --text:#0f172a; --muted:#64748b; --border:#e2e8f0; --pos:#059669; --neg:#dc2626; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; padding: 2rem; }
+  .container { max-width: 1100px; margin: 0 auto; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.75rem; }
+  h2 { font-size: 1.1rem; margin: 1.75rem 0 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mode { display: inline-block; background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; border-radius: 4px; padding: 0.1rem 0.5rem; font-size: 0.8rem; font-weight: 600; margin-left: 0.5rem; vertical-align: middle; }
+  .sub { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; }
+  .kpi .l { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 0.15rem; }
+  .charts { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+  svg { width: 100%; height: auto; display: block; border: 1px solid var(--border); border-radius: 6px; }
+  .lbl { font-size: 11px; fill: var(--muted); font-family: ui-monospace, monospace; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .scroll { max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .pos { color: var(--pos); }
+  .neg { color: var(--neg); }
+  .empty { color: var(--muted); padding: 1rem; }
+  .num { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>{{.Title}} <span class="mode">SIMULATED</span></h1>
+    <div class="sub">Simulated results from a paper broker, {{date .From}} to {{date .To}} · opening {{.Opening}} · {{.Metrics.Trades}} trades</div>
+  </header>
+
+  <h2>Summary</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Net P&amp;L</div><div class="v num {{sign .Metrics.NetPnL}}">{{.Metrics.NetPnL}}</div></div>
+    <div class="kpi"><div class="l">Charges</div><div class="v num">{{.Metrics.Charges}}</div></div>
+    <div class="kpi"><div class="l">Win rate</div><div class="v">{{pct .Metrics.WinRate}}</div></div>
+    <div class="kpi"><div class="l">Profit factor</div><div class="v">{{ratio .Metrics.ProfitFactor}}</div></div>
+    <div class="kpi"><div class="l">Expectancy</div><div class="v num {{sign .Metrics.Expectancy}}">{{.Metrics.Expectancy}}</div></div>
+    <div class="kpi"><div class="l">Avg win / loss</div><div class="v num">{{.Metrics.AvgWin}} / {{.Metrics.AvgLoss}}</div></div>
+    <div class="kpi"><div class="l">Max drawdown (mark-to-market)</div><div class="v num neg">{{drawdown .Curve}} ({{pct (ddpct .Curve)}})</div></div>
+    <div class="kpi"><div class="l">Max drawdown (closed trades)</div><div class="v num neg">{{drawdown .ClosedCurve}} ({{pct (ddpct .ClosedCurve)}})</div></div>
+    <div class="kpi"><div class="l">Avg holding</div><div class="v">{{holding .Metrics.AvgHolding}}</div></div>
+  </div>
+
+  <h2>Equity (mark-to-market, one point per session)</h2>
+  <div class="charts">
+    {{eqSVG .Curve}}
+  </div>
+  <h2>Drawdown from peak</h2>
+  <div class="charts">
+    {{ddSVG .Curve}}
+  </div>
+
+  <h2>By exit reason</h2>
+  {{with reasons .ByReason}}
+  <table>
+    <thead><tr><th>Reason</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Net P&amp;L</th><th>Expectancy</th></tr></thead>
+    <tbody>
+    {{range .}}
+      <tr><td>{{.Reason}}</td><td>{{.Metrics.Trades}}</td><td>{{.Metrics.Wins}}</td><td>{{.Metrics.Losses}}</td><td>{{pct .Metrics.WinRate}}</td><td class="num {{sign .Metrics.NetPnL}}">{{.Metrics.NetPnL}}</td><td class="num {{sign .Metrics.Expectancy}}">{{.Metrics.Expectancy}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="empty">No closed trades.</p>{{end}}
+
+  <h2>Trade log</h2>
+  {{with .Trades}}
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Instrument</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Entry at</th><th>Exit at</th><th>Gross</th><th>Charges</th><th>Net</th><th>Reason</th></tr></thead>
+    <tbody>
+    {{range .}}
+      <tr><td>{{.Key}}</td><td>{{.Side}}</td><td>{{.Quantity}}</td><td class="num">{{.EntryPrice}}</td><td class="num">{{.ExitPrice}}</td><td>{{stamp .EntryAt}}</td><td>{{stamp .ExitAt}}</td><td class="num {{sign .GrossPnL}}">{{.GrossPnL}}</td><td class="num">{{.Charges}}</td><td class="num {{sign .NetPnL}}">{{.NetPnL}}</td><td>{{.ExitReason}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="empty">No closed trades.</p>{{end}}
+</div>
+</body>
+</html>

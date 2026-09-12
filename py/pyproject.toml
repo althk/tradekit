@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tradekit"
+version = "0.1.0"
+description = "Shared trading primitives: domain model, broker ports, risk, costs, calendar, indicators, stats."
+requires-python = ">=3.11"
+dependencies = []
+
+# Vendor SDKs are extras so a screener that only needs indicators and costs
+# installs nothing else. This mirrors the Go side, where the same split is
+# expressed as separate modules.
+[project.optional-dependencies]
+zerodha = ["kiteconnect>=4"]
+upstox = ["httpx>=0.27"]
+fyers = ["httpx>=0.27"]
+alpaca = ["alpaca-py>=0.20"]
+pandas = ["pandas>=2"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tradekit"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+# 120 rather than 88/110: the store's SQL literals are column lists that read
+# worse wrapped than long, and wrapping them invites a stray comma.
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "A", "C4", "SIM", "RUF"]
+# D203/D213 conflict with D211/D212, which ruff enables by default.
+# D401 demands imperative docstrings; this package follows the Google style
+# guide's descriptive form ("Returns the ...", "Whether ..."), which reads
+# correctly on the many properties here.
+ignore = ["D203", "D213", "D401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D100", "D103"]
+# Protocol method stubs are one line of `...` under a documented class; a
+# docstring on each would be noise, not documentation.
+"src/tradekit/core/ports.py" = ["D102"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

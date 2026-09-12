@@ -1,0 +1,20 @@
+// A workspace so day-to-day work sees one tree, while each module is still
+// released and imported independently.
+//
+// Note for environments without access to the Go module proxy: workspace mode
+// loads every module listed here, so a module with an unfetchable dependency
+// breaks commands in all of them. Verify a single module in isolation with
+// GOWORK=off; each module carries a replace directive for core, so they resolve
+// without the workspace.
+go 1.25.0
+
+use (
+	./go/core
+	./go/store
+	./go/zerodha
+	./go/upstox
+	./go/fyers
+	./go/marketdata
+	./go/backtest
+	./go/harness
+)
