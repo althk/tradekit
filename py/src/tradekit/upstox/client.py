@@ -123,7 +123,7 @@ class UpstoxClient:
         self,
         *,
         api_key: str,
-        instrument_key: Callable[[InstrumentKey], str],
+        instrument_key: Callable[[InstrumentKey], str] | None = None,
         api_secret: str = "",
         redirect_uri: str = "",
         access_token: str = "",
@@ -146,7 +146,11 @@ class UpstoxClient:
                 neither of which the adapter can derive from an exchange and a
                 symbol. It is injected rather than looked up here so the adapter
                 does not depend on the store: wire it to the store's
-                ``broker_id``.
+                ``broker_id``. Left ``None``, the client downloads the
+                exchange's instrument master on first use and keeps it for
+                its lifetime -- one request per exchange per process, which
+                is the right trade for a bot that watches a handful of
+                symbols and has no store of its own.
             api_secret: Needed only to exchange an authorisation code.
             redirect_uri: Must match the app's configured redirect exactly.
             access_token: A token from a completed login, valid one trading day.
@@ -171,6 +175,7 @@ class UpstoxClient:
         self._token_issued_at = token_issued_at
         self._tag = tag
         self._instrument_key = instrument_key
+        self._cached_keys: dict[str, dict[InstrumentKey, str]] = {}
         self._instruments_url = instruments_url
         self._http = http_client or httpx.Client(timeout=60.0)
         self._transport = transport or Transport(
@@ -917,18 +922,42 @@ class UpstoxClient:
         is fetched directly rather than through the transport. It is measured in
         megabytes, so it belongs in a daily sync and not in a request path.
         """
+        return parse_instrument_csv(self._fetch_master(exchange))
+
+    def instrument_keys(self, exchange: str = "NSE") -> dict[InstrumentKey, str]:
+        """Upstox's ``SEGMENT|ID`` key for each instrument on an exchange.
+
+        This is what every endpoint addresses by and what a project stores
+        through the store's ``set_broker_id``. Same download as
+        :meth:`instruments`, read for its keys rather than its reference data.
+        """
+        return parse_instrument_keys(self._fetch_master(exchange))
+
+    def _fetch_master(self, exchange: str) -> bytes:
         source = self._instruments_url
         if exchange and exchange.upper() != "NSE" and source == INSTRUMENTS_URL:
             source = source.replace("/NSE.csv.gz", f"/{exchange.upper()}.csv.gz")
         response = self._http.get(source)
         response.raise_for_status()
-        return parse_instrument_csv(response.content)
+        return response.content
 
     # --- helpers ------------------------------------------------------
 
     def _key_for(self, key: InstrumentKey) -> str:
-        """Resolve the ``SEGMENT|ID`` key every endpoint addresses by."""
-        resolved = self._instrument_key(key)
+        """Resolve the ``SEGMENT|ID`` key every endpoint addresses by.
+
+        Through the caller's resolver when one was wired, and the client's own
+        lazily downloaded cache otherwise. A failed download is not cached, so
+        a transient error on the first call does not poison the process.
+        """
+        if self._instrument_key is not None:
+            resolved = self._instrument_key(key)
+        else:
+            by_key = self._cached_keys.get(key.exchange)
+            if by_key is None:
+                by_key = self.instrument_keys(key.exchange)
+                self._cached_keys[key.exchange] = by_key
+            resolved = by_key.get(key, "")
         if not resolved:
             raise RuntimeError(f"upstox: no instrument key known for {key}")
         return resolved
@@ -1007,8 +1036,8 @@ def _number(row: list[Any], index: int) -> float:
         return 0.0
 
 
-def parse_instrument_csv(raw: bytes) -> list[Instrument]:
-    """Parse the instrument master, gzipped or not.
+def _master_rows(raw: bytes) -> Iterator[tuple[dict[str, str], InstrumentKey, str, str]]:
+    """Yield ``(cells, key, raw_key, segment)`` per usable row of the master, gzipped or not.
 
     Whether the body arrives compressed depends on the hop, so the gzip magic
     number is sniffed rather than the URL suffix or the headers trusted.
@@ -1020,8 +1049,6 @@ def parse_instrument_csv(raw: bytes) -> list[Instrument]:
     if raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
     reader = csv.DictReader(io.StringIO(raw.decode("utf-8", errors="replace")))
-
-    out: list[Instrument] = []
     for row in reader:
         cells = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
         symbol = _first(cells.get("tradingsymbol", ""), cells.get("trading_symbol", ""))
@@ -1032,12 +1059,23 @@ def parse_instrument_csv(raw: bytes) -> list[Instrument]:
             segment, _ = parse_instrument_key(raw_key)
         except ValueError:
             continue
+        yield cells, InstrumentKey(exchange=exchange_for(segment), symbol=symbol), raw_key, segment
 
+
+def parse_instrument_keys(raw: bytes) -> dict[InstrumentKey, str]:
+    """Read the master for its ``SEGMENT|ID`` keys alone."""
+    return {key: raw_key for _, key, raw_key, _ in _master_rows(raw)}
+
+
+def parse_instrument_csv(raw: bytes) -> list[Instrument]:
+    """Parse the instrument master into reference data."""
+    out: list[Instrument] = []
+    for cells, key, _, segment in _master_rows(raw):
         instrument_type = cells.get("instrument_type", "")
         lot_size = _int_or(cells.get("lot_size", ""), 1)
         out.append(
             Instrument(
-                key=InstrumentKey(exchange=exchange_for(segment), symbol=symbol),
+                key=key,
                 name=cells.get("name", ""),
                 isin=cells.get("isin", ""),
                 segment=segment_of(instrument_type, segment),

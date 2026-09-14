@@ -21,7 +21,7 @@ exchange and a symbol, so ``instrument_key`` is required.
 Requires the ``upstox`` extra (``httpx``).
 """
 
-from .client import BASE_URL, BASE_URL_V3, INSTRUMENTS_URL, UpstoxClient, parse_instrument_csv
+from .client import BASE_URL, BASE_URL_V3, INSTRUMENTS_URL, UpstoxClient, parse_instrument_csv, parse_instrument_keys
 from .holidays import DEFAULT_HOLIDAYS_URL, Holidays, parse_holidays
 from .transport import (
     APIError,
@@ -49,4 +49,5 @@ __all__ = [
     "UpstoxClient",
     "parse_holidays",
     "parse_instrument_csv",
+    "parse_instrument_keys",
 ]

@@ -23,7 +23,7 @@ from tradekit.core.domain import (
     TimeInForce,
 )
 from tradekit.core.money import parse as money_parse
-from tradekit.upstox import UpstoxClient, parse_instrument_csv
+from tradekit.upstox import UpstoxClient, parse_instrument_csv, parse_instrument_keys
 from tradekit.upstox.client import _gtt_is_live, _stop_direction, _target_direction
 from tradekit.upstox.mapping import (
     RULE_STOPLOSS,
@@ -831,6 +831,42 @@ def test_parse_instrument_csv_handles_both_encodings(compress):
     assert option.expiry == dt.date(2025, 4, 17)
     assert option.strike == money_parse("24500.00")
     assert instruments["Nifty 50"].segment == "index"
+
+
+def test_parse_instrument_keys_reads_the_raw_key_per_instrument() -> None:
+    keys = parse_instrument_keys(INSTRUMENT_CSV.encode())
+    assert keys[RELIANCE] == "NSE_EQ|INE002A01018"
+    assert keys[InstrumentKey("NFO", "NIFTY24500CE")] == "NSE_FO|54321", (
+        "a derivative's key is its exchange token, which no ISIN lookup could produce"
+    )
+    assert InstrumentKey("NSE", "BROKEN") not in keys, "the row with no instrument key must be skipped"
+
+
+def test_client_downloads_and_caches_keys_when_no_resolver_is_wired() -> None:
+    downloads = 0
+
+    def master(request: httpx.Request) -> httpx.Response:
+        nonlocal downloads
+        downloads += 1
+        return httpx.Response(200, content=INSTRUMENT_CSV.encode())
+
+    client = UpstoxClient(
+        api_key="k",
+        access_token="t",
+        http_client=httpx.Client(transport=httpx.MockTransport(master)),
+    )
+    assert client._key_for(RELIANCE) == "NSE_EQ|INE002A01018"
+    assert client._key_for(InstrumentKey("NSE", "TCS")) == "NSE_EQ|INE467B01029"
+    assert downloads == 1, "one exchange is one download per process, not one per lookup"
+    with pytest.raises(RuntimeError, match="no instrument key known"):
+        client._key_for(InstrumentKey("NSE", "NOPE"))
+    assert downloads == 1, "an unknown symbol on a cached exchange must not refetch"
+
+
+def test_client_prefers_the_wired_resolver() -> None:
+    client = UpstoxClient(api_key="k", access_token="t", instrument_key=lambda k: "WIRED|1")
+    client._cached_keys["NSE"] = {RELIANCE: "CACHED|1"}
+    assert client._key_for(RELIANCE) == "WIRED|1", "a resolver the caller wired must win over the built-in cache"
 
 
 # --- token freshness --------------------------------------------------
