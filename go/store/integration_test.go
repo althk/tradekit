@@ -723,3 +723,29 @@ func TestOpenMigratedIsReadyToUse(t *testing.T) {
 		t.Errorf("the schema must be in place after OpenMigrated, got %v", err)
 	}
 }
+
+func TestRecordFillWritesSignalAndOrderTogether(t *testing.T) {
+	db := openTest(t)
+	ctx := t.Context()
+	at := time.Date(2026, 1, 5, 9, 20, 0, 0, time.UTC)
+	sig := domain.Signal{Key: testKey, Kind: domain.Long, At: at, Price: money.MustParse("100.00"), Strategy: "x"}
+	o := domain.Order{
+		ID: "ORDER-F", Status: domain.StatusComplete, PlacedAt: at, UpdatedAt: at,
+		Request: domain.OrderRequest{Key: testKey, Side: domain.Buy, Quantity: 1, Type: domain.Market, Product: domain.CNC, TimeInForce: domain.Day},
+	}
+
+	id, err := db.RecordFill(ctx, sig, o, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == 0 {
+		t.Error("RecordFill must return the signal's row id")
+	}
+	if got, err := db.Order(ctx, "ORDER-F"); err != nil || got.ID != "ORDER-F" {
+		t.Errorf("the order must be readable after RecordFill, got %+v %v", got, err)
+	}
+	if sigs, err := db.RecentSignals(ctx, 10, false); err != nil || len(sigs) != 1 {
+		t.Errorf("the signal must be readable after RecordFill, got %d %v", len(sigs), err)
+	}
+
+}

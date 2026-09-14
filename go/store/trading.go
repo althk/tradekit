@@ -13,10 +13,20 @@ import (
 	"github.com/althk/tradekit/go/core/stats"
 )
 
+// execer is what the writers below need, so one statement can run against
+// the pool or inside a transaction another writer opened.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // InsertSignal records a signal and returns its row id.
 //
 // runID may be zero for live trading, where there is no enclosing run.
 func (d *DB) InsertSignal(ctx context.Context, sig domain.Signal, runID int64, paper bool) (int64, error) {
+	return insertSignal(ctx, d.db, sig, runID, paper)
+}
+
+func insertSignal(ctx context.Context, ex execer, sig domain.Signal, runID int64, paper bool) (int64, error) {
 	metadata := "{}"
 	if len(sig.Metadata) > 0 {
 		raw, err := json.Marshal(sig.Metadata)
@@ -31,7 +41,7 @@ func (d *DB) InsertSignal(ctx context.Context, sig domain.Signal, runID int64, p
 		run = runID
 	}
 
-	res, err := d.db.ExecContext(ctx, `
+	res, err := ex.ExecContext(ctx, `
 		INSERT INTO signals (run_id, exchange, symbol, kind, at, price, stop, target, strategy, metadata, paper)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run, sig.Key.Exchange, sig.Key.Symbol, string(sig.Kind), formatTime(sig.At),
@@ -46,8 +56,12 @@ func (d *DB) InsertSignal(ctx context.Context, sig domain.Signal, runID int64, p
 // exists. Placing and then reconciling the same order is the normal path, so
 // this is called repeatedly for one id.
 func (d *DB) UpsertOrder(ctx context.Context, o domain.Order, paper bool) error {
+	return upsertOrder(ctx, d.db, o, paper)
+}
+
+func upsertOrder(ctx context.Context, ex execer, o domain.Order, paper bool) error {
 	r := o.Request
-	_, err := d.db.ExecContext(ctx, `
+	_, err := ex.ExecContext(ctx, `
 		INSERT INTO orders
 			(id, exchange, symbol, side, quantity, type, product, limit_price, trigger_price,
 			 time_in_force, tag, status, filled_quantity, average_price, placed_at, updated_at, message,
@@ -67,6 +81,25 @@ func (d *DB) UpsertOrder(ctx context.Context, o domain.Order, paper bool) error 
 		return fmt.Errorf("store: upserting order %s: %w", o.ID, err)
 	}
 	return nil
+}
+
+// RecordFill writes the signal that was acted on and the order it produced
+// in one transaction, and returns the signal's row id.
+//
+// Written separately, a crash between the two leaves a signal with no order
+// or an order with no signal, and the morning's reconciliation cannot tell
+// that from a signal that was skipped. Together they are one fact: this
+// signal became this order.
+func (d *DB) RecordFill(ctx context.Context, sig domain.Signal, o domain.Order, runID int64, paper bool) (int64, error) {
+	var id int64
+	err := d.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		if id, err = insertSignal(ctx, tx, sig, runID, paper); err != nil {
+			return err
+		}
+		return upsertOrder(ctx, tx, o, paper)
+	})
+	return id, err
 }
 
 // SetOrderProtective records the resting stop placed for a filled order, so a
