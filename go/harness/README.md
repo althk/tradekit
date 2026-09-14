@@ -10,7 +10,9 @@ queue, drop-oldest, one delivery goroutine, paced by `core/ratelimit`),
 redirect-based broker login, over `ports.BrowserLogin`, which `zerodha`,
 `upstox` and `fyers` implement (`LoginURL` + `LoginCallback(ctx, query)`; the
 adapter owns its parameter names, its refusal format and, for FYERS, the
-state check).
+state check), and `EnsureSession` — the store-backed wrapper around it that
+reuses yesterday's token when the venue still accepts it and persists a new
+one otherwise, over `ports.TokenState` + `ports.ErrTokenExpired`.
 
 The Python mirror is `py/src/tradekit/harness/`. Both run the `config` and
 `journal` blocks of `contracts/testdata/parity.json`.
