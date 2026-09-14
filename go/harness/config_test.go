@@ -184,7 +184,7 @@ func TestSecretDoesNotLeakThroughAnyFormattingPath(t *testing.T) {
 	for name, rendered := range map[string]string{
 		"%v":       fmt.Sprintf("%v", c),
 		"%+v":      fmt.Sprintf("%+v", c),
-		"%s":       fmt.Sprintf("%s", c.Pass),
+		"%s":       c.Pass.String(),
 		"%#v":      fmt.Sprintf("%#v", c),
 		"Sprint":   fmt.Sprint(c.Pass),
 		"Redacted": Redacted(c),
