@@ -239,6 +239,18 @@ type Position struct {
 	UnrealizedPnL money.Money
 }
 
+// HeldQuantity returns the signed quantity held in one instrument, or zero
+// when there is no position in it. Brokers report positions as a flat list,
+// and "how many of X do I hold" is the question every strategy asks of it.
+func HeldQuantity(positions []Position, key InstrumentKey) int {
+	for _, p := range positions {
+		if p.Key == key {
+			return p.Quantity
+		}
+	}
+	return 0
+}
+
 // OrderRequest is an instruction to the broker. Quantity is always positive;
 // direction is carried by Side.
 type OrderRequest struct {
