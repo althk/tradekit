@@ -114,6 +114,21 @@ func Open(driverName, path string, opts ...Option) (*DB, error) {
 	return db, nil
 }
 
+// OpenMigrated is Open followed by Migrate, for the process that owns the
+// database. It is the first thing every bot's main does; a read-only tool
+// keeps using Open so it cannot change the file's shape.
+func OpenMigrated(ctx context.Context, driverName, path string, opts ...Option) (*DB, error) {
+	db, err := Open(driverName, path, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 // New wraps an already-open *sql.DB and applies the pragmas.
 //
 // Use it when the caller needs control over the DSN, or is supplying a

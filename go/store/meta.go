@@ -92,6 +92,27 @@ func (d *DB) FinishRun(ctx context.Context, id int64, status, message string) er
 	return nil
 }
 
+// WithRun brackets fn in a run: StartRun before, FinishRun after with
+// status "ok", or "error" and fn's message when it fails. fn's error is
+// returned as is.
+//
+// A run left "running" forever because the process died between the work
+// and FinishRun is the ordinary outcome of writing the bracket by hand at
+// every return; this makes the finish unconditional.
+func (d *DB) WithRun(ctx context.Context, kind, name string, params any, fn func(ctx context.Context, runID int64) error) error {
+	runID, err := d.StartRun(ctx, kind, name, params)
+	if err != nil {
+		return err
+	}
+	if err := fn(ctx, runID); err != nil {
+		// The finish error is deliberately discarded: the caller needs to
+		// see why the work failed, not why the bookkeeping did.
+		_ = d.FinishRun(ctx, runID, "error", err.Error())
+		return err
+	}
+	return d.FinishRun(ctx, runID, "ok", "")
+}
+
 // UpsertChargeRate records one effective-dated charge rate.
 func (d *DB) UpsertChargeRate(ctx context.Context, broker string, seg costs.Segment, kind costs.Kind, r costs.Rate) error {
 	_, err := d.db.ExecContext(ctx, `

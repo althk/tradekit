@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -23,19 +24,7 @@ import (
 // checkout with no network is not a broken checkout.
 func openTest(t *testing.T) *DB {
 	t.Helper()
-
-	var driverName string
-	for _, name := range sql.Drivers() {
-		if name == "sqlite" || name == "sqlite3" {
-			driverName = name
-			break
-		}
-	}
-	if driverName == "" {
-		t.Skip("no SQLite driver registered; run with -tags sqlitedriver")
-	}
-
-	db, err := Open(driverName, ":memory:")
+	db, err := Open(testDriver(t), ":memory:")
 	if err != nil {
 		t.Fatalf("opening test database: %v", err)
 	}
@@ -47,20 +36,22 @@ func openTest(t *testing.T) *DB {
 	return db
 }
 
+// testDriver names the registered SQLite driver, or skips.
+func testDriver(t *testing.T) string {
+	t.Helper()
+	for _, name := range sql.Drivers() {
+		if name == "sqlite" || name == "sqlite3" {
+			return name
+		}
+	}
+	t.Skip("no SQLite driver registered; run with -tags sqlitedriver")
+	return ""
+}
+
 // openRawTest returns an open, unmigrated in-memory database, or skips.
 func openRawTest(t *testing.T) *DB {
 	t.Helper()
-	var driverName string
-	for _, name := range sql.Drivers() {
-		if name == "sqlite" || name == "sqlite3" {
-			driverName = name
-			break
-		}
-	}
-	if driverName == "" {
-		t.Skip("no SQLite driver registered; run with -tags sqlitedriver")
-	}
-	db, err := Open(driverName, ":memory:")
+	db, err := Open(testDriver(t), ":memory:")
 	if err != nil {
 		t.Fatalf("opening test database: %v", err)
 	}
@@ -681,5 +672,54 @@ func TestAdoptLegacyMovesCollidingTablesAside(t *testing.T) {
 	}
 	if ok, _ := TableExists(ctx, sqlDB, "orders_legacy_legacy"); ok {
 		t.Error("adoption must be a no-op once the database is migrated")
+	}
+}
+
+func TestWithRunFinishesTheRunEitherWay(t *testing.T) {
+	db := openTest(t)
+	ctx := t.Context()
+
+	status := func(id int64) (string, string) {
+		var st, msg string
+		if err := db.SQL().QueryRowContext(ctx, `SELECT status, message FROM runs WHERE id = ?`, id).Scan(&st, &msg); err != nil {
+			t.Fatal(err)
+		}
+		return st, msg
+	}
+
+	var okID int64
+	err := db.WithRun(ctx, "live", "test", nil, func(_ context.Context, runID int64) error {
+		okID = runID
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := status(okID); st != "ok" {
+		t.Errorf("a run whose body returns nil must finish ok, got %q", st)
+	}
+
+	boom := errors.New("broker down")
+	var failID int64
+	err = db.WithRun(ctx, "live", "test", nil, func(_ context.Context, runID int64) error {
+		failID = runID
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("the body's error must come back unchanged, got %v", err)
+	}
+	if st, msg := status(failID); st != "error" || msg != "broker down" {
+		t.Errorf("a failed run must be closed as error with the message, got %q %q", st, msg)
+	}
+}
+
+func TestOpenMigratedIsReadyToUse(t *testing.T) {
+	db, err := OpenMigrated(t.Context(), testDriver(t), ":memory:")
+	if err != nil {
+		t.Fatalf("OpenMigrated: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.StartRun(t.Context(), "live", "x", nil); err != nil {
+		t.Errorf("the schema must be in place after OpenMigrated, got %v", err)
 	}
 }
