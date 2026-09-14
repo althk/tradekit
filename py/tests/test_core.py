@@ -19,12 +19,14 @@ from tradekit.core.domain import (
     Candle,
     ExitReason,
     InstrumentKey,
+    Position,
     Side,
     Signal,
     SignalKind,
     Timeframe,
     Trade,
     gross_for,
+    held_quantity,
 )
 from tradekit.core.money import Money
 
@@ -102,6 +104,14 @@ def test_non_positive_tick_leaves_amount_unchanged() -> None:
 def test_gross_for_signs() -> None:
     assert gross_for(Side.BUY, 10, money.parse("100.00"), money.parse("110.00")) == money.parse("100.00")
     assert gross_for(Side.SELL, 10, money.parse("100.00"), money.parse("90.00")) == money.parse("100.00")
+
+
+def test_held_quantity_returns_the_signed_quantity_for_one_key_only() -> None:
+    tcs = InstrumentKey("NSE", "TCS")
+    positions = [Position(KEY, 10, money.parse("100.00")), Position(tcs, -5, money.parse("50.00"))]
+    assert held_quantity(positions, KEY) == 10, "a long position must report its quantity"
+    assert held_quantity(positions, tcs) == -5, "a short position must keep its sign"
+    assert held_quantity(positions, InstrumentKey("NSE", "INFY")) == 0, "no position must read as zero"
 
 
 def test_signal_side() -> None:

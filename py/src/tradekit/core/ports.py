@@ -56,6 +56,7 @@ __all__ = [
     "Streamer",
     "SystemClock",
     "TickObserver",
+    "TokenExpiredError",
     "TokenState",
 ]
 
@@ -173,6 +174,23 @@ class TokenState(Protocol):
     """
 
     def token_fresh(self) -> bool: ...
+
+    def set_access_token(self, token: str, issued_at: dt.datetime) -> None:
+        """Install a token obtained earlier -- from the store after a restart, typically.
+
+        ``issued_at`` is what :meth:`token_fresh` judges by.
+        """
+        ...
+
+
+class TokenExpiredError(Exception):
+    """The venue-neutral form of "log in again".
+
+    Each adapter's own ``TokenExpiredError`` derives from this one as well as
+    its API error, so code written against the ports here -- session reuse in
+    ``harness``, a scheduler's pre-open check -- can catch it without importing
+    every adapter.
+    """
 
 
 @runtime_checkable

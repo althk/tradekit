@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from tradekit.core import ports
+
 __all__ = [
     "APIError",
     "RateLimitedError",
@@ -64,7 +66,7 @@ class APIError(RuntimeError):
         return False
 
 
-class TokenExpiredError(APIError):
+class TokenExpiredError(APIError, ports.TokenExpiredError):
     """The access token is no longer valid; the caller must log in again.
 
     Distinct from :class:`TransientError` because retrying with the same token

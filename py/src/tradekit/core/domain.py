@@ -39,6 +39,7 @@ __all__ = [
     "Timeframe",
     "Trade",
     "gross_for",
+    "held_quantity",
 ]
 
 
@@ -391,6 +392,18 @@ class Trade:
     exit_reason: ExitReason = ExitReason.SIGNAL
     strategy: str = ""
     paper: bool = False
+
+
+def held_quantity(positions: list[Position], key: InstrumentKey) -> int:
+    """The signed quantity held in one instrument, or zero when there is no position in it.
+
+    Brokers report positions as a flat list, and "how many of X do I hold" is
+    the question every strategy asks of it.
+    """
+    for p in positions:
+        if p.key == key:
+            return p.quantity
+    return 0
 
 
 def gross_for(side: Side, quantity: int, entry: Money, exit_: Money) -> Money:
