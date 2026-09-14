@@ -20,6 +20,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"time"
 
@@ -139,7 +140,17 @@ type TokenState interface {
 	// TokenFresh reports whether the current access token is valid for the
 	// current trading day.
 	TokenFresh(ctx context.Context) bool
+	// SetAccessToken installs a token obtained earlier -- from the store
+	// after a restart, typically -- and records when it was issued, which is
+	// what TokenFresh judges by.
+	SetAccessToken(token string, issuedAt time.Time)
 }
+
+// ErrTokenExpired is the venue-neutral form of "log in again". Each adapter
+// wraps its own ErrTokenExpired around this one, so code written against the
+// interfaces here -- session reuse in harness, a scheduler's pre-open check --
+// can errors.Is for it without importing every adapter.
+var ErrTokenExpired = errors.New("access token expired")
 
 // BrowserLogin is the redirect-based login every Indian broker uses to issue
 // the day's access token: the user visits LoginURL, the broker sends the

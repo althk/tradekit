@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/althk/tradekit/go/core/ports"
 )
 
 // The three answers a caller actually acts on.
@@ -15,7 +17,7 @@ import (
 var (
 	// ErrTokenExpired means the access token is no longer valid and the
 	// caller must log in again. Retrying with the same token cannot succeed.
-	ErrTokenExpired = errors.New("upstox: access token expired")
+	ErrTokenExpired = fmt.Errorf("upstox: %w", ports.ErrTokenExpired)
 	// ErrTransient means the failure was in transport, in Upstox's own
 	// infrastructure, or in a rate limit, and the same call may succeed if
 	// repeated.

@@ -2,7 +2,10 @@ package zerodha
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+
+	"github.com/althk/tradekit/go/core/ports"
 
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
@@ -16,7 +19,7 @@ import (
 var (
 	// ErrTokenExpired means the access token is no longer valid and the
 	// caller must log in again. Retrying with the same token cannot succeed.
-	ErrTokenExpired = errors.New("zerodha: access token expired")
+	ErrTokenExpired = fmt.Errorf("zerodha: %w", ports.ErrTokenExpired)
 	// ErrTransient means the failure was in transport, in Kite's own
 	// infrastructure, or in the rate limiter, and the same call may succeed
 	// if repeated.
