@@ -116,3 +116,18 @@ func TestReportRendersWithNoTrades(t *testing.T) {
 		t.Error("an empty run must say so rather than render an empty table")
 	}
 }
+
+func TestWriteHTMLFileProducesAReadableReport(t *testing.T) {
+	report, err := Build(sampleSpec(), sampleTrades(), sampleCurve())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := report.WriteHTMLFile(path); err != nil {
+		t.Fatalf("WriteHTMLFile: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(raw), "simulated") {
+		t.Errorf("the file must hold the rendered report, got %d bytes %v", len(raw), err)
+	}
+}

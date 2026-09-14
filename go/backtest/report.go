@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"io"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -118,6 +119,22 @@ func (r Report) WriteHTML(w io.Writer) error {
 		return fmt.Errorf("backtest: rendering report: %w", err)
 	}
 	return nil
+}
+
+// WriteHTMLFile renders the report to path, replacing any file there. A
+// rendering failure is reported over a failure to close the file, since the
+// first is what the caller can act on.
+func (r Report) WriteHTMLFile(path string) (err error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("backtest: creating report file: %w", err)
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil && cerr != nil {
+			err = fmt.Errorf("backtest: closing report file: %w", cerr)
+		}
+	}()
+	return r.WriteHTML(f)
 }
 
 // reasonRow pairs a reason with its metrics, in a stable order for the
