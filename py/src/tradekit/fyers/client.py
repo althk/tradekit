@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import secrets
 import urllib.parse
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -341,6 +342,9 @@ class FyersClient:
         self._redirect_uri = redirect_uri
         self._access_token = access_token
         self._token_issued_at = token_issued_at
+        # The state sent with the last login_url, which the callback must
+        # echo; empty when no login is in progress.
+        self._login_state = ""
         self._tag = tag
         self._symbol_master_url = symbol_master_url.rstrip("/")
         self._http = http_client or httpx.Client(timeout=60.0)
@@ -360,9 +364,13 @@ class FyersClient:
     def login_url(self, state: str = "") -> str:
         """The URL a user visits to authorise the app and obtain a code.
 
-        ``state`` is echoed back unchanged on the redirect; send a random value
-        and check it, as the reference recommends.
+        Each call starts a new login attempt: ``state`` goes on the URL and is
+        remembered, and :meth:`login_callback` refuses a redirect that does not
+        echo it. The reference recommends the check; a random value is minted
+        here when none is given, so it cannot be skipped by accident.
         """
+        state = state or secrets.token_hex(16)
+        self._login_state = state
         query = urllib.parse.urlencode(
             {"client_id": self._app_id, "redirect_uri": self._redirect_uri, "response_type": "code", "state": state}
         )
@@ -403,6 +411,26 @@ class FyersClient:
             raise RuntimeError("fyers: token exchange returned an empty access_token")
         self.set_access_token(token, dt.datetime.now(dt.UTC))
         return token
+
+    def login_callback(self, query: Mapping[str, str]) -> str:
+        """Complete a login from the query FYERS redirected back with.
+
+        The state must match the one :meth:`login_url` put on the wire: a
+        callback carrying another value is a stale tab or a forged request, and
+        exchanging its code would install whoever's session it belongs to. A
+        refused login arrives without ``auth_code``; whatever FYERS did send is
+        quoted, since the reference does not fix the error parameters.
+        """
+        if not self._login_state:
+            raise RuntimeError("fyers: no login in progress; call login_url first")
+        got = query.get("state", "")
+        if got != self._login_state:
+            raise RuntimeError(f"fyers: login callback state {got!r} does not match the one sent")
+        code = query.get("auth_code", "")
+        if not code:
+            reason = urllib.parse.urlencode(dict(query)) if query else "no auth_code in callback"
+            raise RuntimeError(f"fyers: login refused ({reason})")
+        return self.login(code)
 
     def set_access_token(self, token: str, issued_at: dt.datetime) -> None:
         """Install a token and record when it was issued."""

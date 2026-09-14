@@ -4,7 +4,7 @@
 //
 // The client satisfies ports.Broker, and separately ports.Quoter,
 // ports.HistoryProvider, ports.ProtectiveOrders, ports.MarginEstimator,
-// ports.InstrumentSource and ports.TokenState. A consumer type-asserts for the
+// ports.InstrumentSource, ports.TokenState and ports.BrowserLogin. A consumer type-asserts for the
 // capabilities it needs, so a strategy that requires basket margins fails at
 // wiring time against a venue that has none, rather than at 09:15.
 //
@@ -36,6 +36,7 @@ package fyers
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -61,6 +62,7 @@ var (
 	_ ports.MarginEstimator  = (*Client)(nil)
 	_ ports.InstrumentSource = (*Client)(nil)
 	_ ports.TokenState       = (*Client)(nil)
+	_ ports.BrowserLogin     = (*Client)(nil)
 )
 
 // API roots.
@@ -163,10 +165,13 @@ type Client struct {
 	// waiting for it.
 	sleep func(context.Context, time.Duration) error
 
-	// mu guards the token pair.
+	// mu guards the token pair and the login state.
 	mu            sync.RWMutex
 	accessToken   string
 	tokenIssuedAt time.Time
+	// loginState is the state sent with the last LoginURL, which the
+	// callback must echo back; empty when no login is in progress.
+	loginState string
 }
 
 // New returns a client. It does not contact the broker: a token supplied in
@@ -222,9 +227,21 @@ func orDefault(v, fallback string) string {
 // LoginURL returns the URL a user visits to authorise the app and obtain an
 // authorisation code, which FYERS delivers to RedirectURI as ?auth_code=.
 //
-// state is echoed back unchanged on the redirect; a caller should send a
-// random value and check it, as the reference recommends.
-func (c *Client) LoginURL(state string) string {
+// Each call starts a new login attempt: a random state goes on the URL and is
+// remembered, and LoginCallback refuses a redirect that does not echo it.
+// The reference recommends the check; generating the value here rather than
+// taking it from the caller is what makes it impossible to skip.
+func (c *Client) LoginURL() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failing is a broken platform, not a condition to handle.
+		panic("fyers: crypto/rand: " + err.Error())
+	}
+	state := hex.EncodeToString(b[:])
+	c.mu.Lock()
+	c.loginState = state
+	c.mu.Unlock()
+
 	q := url.Values{}
 	q.Set("client_id", c.opts.AppID)
 	q.Set("redirect_uri", c.opts.RedirectURI)
@@ -278,6 +295,38 @@ func (c *Client) Login(ctx context.Context, authCode string) (string, error) {
 	}
 	c.SetAccessToken(out.AccessToken, time.Now())
 	return out.AccessToken, nil
+}
+
+// LoginCallback completes a login from the query FYERS redirected back with.
+//
+// The state must match the one LoginURL put on the wire: a callback carrying
+// another value is a stale tab or a forged request, and exchanging its code
+// would install whoever's session it belongs to. A refused login arrives
+// without auth_code; whatever FYERS did send is quoted, since the reference
+// does not fix the error parameters.
+func (c *Client) LoginCallback(ctx context.Context, query url.Values) (string, error) {
+	c.mu.RLock()
+	want := c.loginState
+	c.mu.RUnlock()
+	if want == "" {
+		return "", fmt.Errorf("fyers: no login in progress; call LoginURL first")
+	}
+	if got := query.Get("state"); got != want {
+		return "", fmt.Errorf("fyers: login callback state %q does not match the one sent", got)
+	}
+	code := query.Get("auth_code")
+	if code == "" {
+		return "", fmt.Errorf("fyers: login refused (%s)", refusal(query))
+	}
+	return c.Login(ctx, code)
+}
+
+// refusal renders a callback query that carried no code, for the error.
+func refusal(query url.Values) string {
+	if len(query) == 0 {
+		return "no auth_code in callback"
+	}
+	return query.Encode()
 }
 
 // SetAccessToken installs a token and records when it was issued.

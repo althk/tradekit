@@ -8,7 +8,7 @@
 //
 // The client satisfies ports.Broker, and separately ports.Quoter,
 // ports.HistoryProvider, ports.ProtectiveOrders, ports.MarginEstimator,
-// ports.InstrumentSource and ports.TokenState. A consumer type-asserts for the
+// ports.InstrumentSource, ports.TokenState and ports.BrowserLogin. A consumer type-asserts for the
 // capabilities it needs, so a strategy that requires basket margins fails at
 // wiring time against a venue that has none, rather than at 09:15.
 //
@@ -59,6 +59,7 @@ var (
 	_ ports.MarginEstimator  = (*Client)(nil)
 	_ ports.InstrumentSource = (*Client)(nil)
 	_ ports.TokenState       = (*Client)(nil)
+	_ ports.BrowserLogin     = (*Client)(nil)
 )
 
 // API roots.
@@ -276,6 +277,27 @@ func (c *Client) Login(ctx context.Context, authCode string) (string, error) {
 	}
 	c.SetAccessToken(out.AccessToken, time.Now())
 	return out.AccessToken, nil
+}
+
+// LoginCallback completes a login from the query Upstox redirected back with.
+//
+// A refused or abandoned login comes back without a code; Upstox does not
+// document a stable error parameter, so whatever it did send is quoted
+// rather than guessed at.
+func (c *Client) LoginCallback(ctx context.Context, query url.Values) (string, error) {
+	code := query.Get("code")
+	if code == "" {
+		return "", fmt.Errorf("upstox: login refused (%s)", refusal(query))
+	}
+	return c.Login(ctx, code)
+}
+
+// refusal renders a callback query that carried no code, for the error.
+func refusal(query url.Values) string {
+	if len(query) == 0 {
+		return "no code in callback"
+	}
+	return query.Encode()
 }
 
 // SetAccessToken installs a token and records when it was issued.

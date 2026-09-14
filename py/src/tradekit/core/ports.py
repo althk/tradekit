@@ -18,6 +18,7 @@ time with a clear message, rather than at 09:15 with an empty result.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -40,6 +41,7 @@ from .money import Money
 
 __all__ = [
     "Broker",
+    "BrowserLogin",
     "Clock",
     "GateVerdict",
     "HistoryProvider",
@@ -171,6 +173,39 @@ class TokenState(Protocol):
     """
 
     def token_fresh(self) -> bool: ...
+
+
+@runtime_checkable
+class BrowserLogin(Protocol):
+    """The redirect-based login every Indian broker uses to issue the day's token.
+
+    The user visits :meth:`login_url`, the broker sends the browser back to a
+    registered redirect URL with a single-use code in the query string, and
+    the adapter exchanges the code for a token.
+
+    The callback takes the whole query rather than a code because the brokers
+    disagree on everything about it: Kite sends ``request_token``, Upstox
+    ``code``, FYERS ``auth_code`` plus a ``state`` the adapter must verify, and
+    each reports a refused login in its own way. Keeping that inside the
+    adapter is what lets one callback server in ``harness`` serve all of them.
+    """
+
+    def login_url(self) -> str:
+        """Where the user starts.
+
+        May begin a login attempt (FYERS generates the state it later checks),
+        so call it once per attempt.
+        """
+        ...
+
+    def login_callback(self, query: Mapping[str, str]) -> str:
+        """Complete a login from the query the broker redirected back with.
+
+        Exchanges the code in it, installs the token on the adapter and returns
+        it so the caller can persist it. A refused login arrives here too, and
+        raises ``RuntimeError`` naming the broker's reason.
+        """
+        ...
 
 
 @runtime_checkable

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import urllib.parse
 from itertools import pairwise
 from pathlib import Path
 
@@ -960,3 +961,26 @@ def test_parity_order_time(parity: dict) -> None:
             assert got is None, case
         else:
             assert got == dt.datetime.fromisoformat(case["want"]), case
+
+
+def test_login_callback_checks_the_state_login_url_minted():
+    recorder = Recorder({"/api/v3/validate-authcode": {"s": "ok", "code": 200, "access_token": "fresh"}})
+    client = FyersClient(
+        app_id="APP-100", app_secret="secret", redirect_uri="https://cb", transport=make_transport(recorder)
+    )
+    with pytest.raises(RuntimeError, match="no login in progress"):
+        client.login_callback({"auth_code": "x"})
+
+    first = urllib.parse.parse_qs(urllib.parse.urlparse(client.login_url()).query)["state"][0]
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(client.login_url()).query)["state"][0]
+    assert len(state) >= 32 and state != first, "each login_url mints a fresh random state"
+
+    with pytest.raises(RuntimeError, match="state"):
+        client.login_callback({"auth_code": "abc", "state": "forged"})
+    with pytest.raises(RuntimeError, match="login refused"):
+        client.login_callback({"state": state})
+    assert not [r for r in recorder.requests if r.url.path == "/api/v3/validate-authcode"], (
+        "nothing is exchanged until the state matches"
+    )
+    assert client.login_callback({"auth_code": "abc", "state": state}) == "fresh"
+    assert recorder.sent("/api/v3/validate-authcode")["code"] == "abc"

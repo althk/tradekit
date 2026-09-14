@@ -6,7 +6,11 @@ is the only way to read it), `Redacted` (the only supported way to print a
 config), the slog attribute helpers, the decision `Journal` over the shared
 `decisions` table (migration 003), and `Notifier` with `Telegram` (bounded
 queue, drop-oldest, one delivery goroutine, paced by `core/ratelimit`),
-`Multi` and `Discard`.
+`Multi` and `Discard`, and `BrowserLogin` — the one callback server for the
+redirect-based broker login, over `ports.BrowserLogin`, which `zerodha`,
+`upstox` and `fyers` implement (`LoginURL` + `LoginCallback(ctx, query)`; the
+adapter owns its parameter names, its refusal format and, for FYERS, the
+state check).
 
 The Python mirror is `py/src/tradekit/harness/`. Both run the `config` and
 `journal` blocks of `contracts/testdata/parity.json`.

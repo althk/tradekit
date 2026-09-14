@@ -8,7 +8,7 @@
 //
 // The client satisfies ports.Broker, and separately ports.Quoter,
 // ports.HistoryProvider, ports.ProtectiveOrders, ports.MarginEstimator,
-// ports.InstrumentSource and ports.TokenState. A consumer type-asserts for the
+// ports.InstrumentSource, ports.TokenState and ports.BrowserLogin. A consumer type-asserts for the
 // capabilities it needs, so a strategy that requires basket margins fails at
 // wiring time against a venue that has none, rather than at 09:15.
 //
@@ -26,10 +26,12 @@ package zerodha
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/althk/tradekit/go/core/domain"
+	"github.com/althk/tradekit/go/core/ports"
 	"github.com/althk/tradekit/go/core/ratelimit"
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
@@ -164,6 +166,30 @@ func (c *Client) Login(requestToken string) (string, error) {
 	c.SetAccessToken(session.AccessToken, time.Now())
 	return session.AccessToken, nil
 }
+
+// LoginCallback completes a login from the query Kite redirected back with.
+//
+// Kite delivers a successful login as ?request_token=...&status=success and a
+// refused one as ?status=error&message=..., with no request_token at all; a
+// caller indexing into the query blindly panics inside the HTTP handler and
+// leaves the process waiting for a token that never comes. The SDK's session
+// call takes no context, so ctx is accepted for the port and not used.
+func (c *Client) LoginCallback(_ context.Context, query url.Values) (string, error) {
+	token := query.Get("request_token")
+	if token == "" {
+		reason := query.Get("status")
+		if msg := query.Get("message"); msg != "" {
+			reason += ": " + msg
+		}
+		if reason == "" {
+			reason = "no request_token in callback"
+		}
+		return "", fmt.Errorf("zerodha: login refused (%s)", reason)
+	}
+	return c.Login(token)
+}
+
+var _ ports.BrowserLogin = (*Client)(nil)
 
 // SetAccessToken installs a token and records when it was issued.
 func (c *Client) SetAccessToken(token string, issuedAt time.Time) {

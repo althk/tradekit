@@ -16,7 +16,7 @@ import datetime as dt
 import gzip
 import io
 import urllib.parse
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -232,6 +232,19 @@ class UpstoxClient:
             raise RuntimeError(f"upstox: token exchange failed (HTTP {response.status_code}): {response.text[:300]}")
         self.set_access_token(token, dt.datetime.now(dt.UTC))
         return token
+
+    def login_callback(self, query: Mapping[str, str]) -> str:
+        """Complete a login from the query Upstox redirected back with.
+
+        A refused or abandoned login comes back without a code; Upstox does not
+        document a stable error parameter, so whatever it did send is quoted
+        rather than guessed at.
+        """
+        code = query.get("code", "")
+        if not code:
+            reason = urllib.parse.urlencode(dict(query)) if query else "no code in callback"
+            raise RuntimeError(f"upstox: login refused ({reason})")
+        return self.login(code)
 
     def set_access_token(self, token: str, issued_at: dt.datetime) -> None:
         """Install a token and record when it was issued."""

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -355,5 +356,27 @@ func TestLoginURLCarriesTheAppsParameters(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the login URL must contain %q, got %q", want, got)
 		}
+	}
+}
+
+func TestLoginCallbackExchangesTheCodeFromTheQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.FormValue("code"); got != "abc123" {
+			t.Errorf("the code from the callback query must be exchanged, got %q", got)
+		}
+		_, _ = w.Write([]byte(`{"access_token":"fresh-token"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := newTestClient(t, srv)
+	c.opts.APISecret = "secret"
+	token, err := c.LoginCallback(context.Background(), url.Values{"code": {"abc123"}})
+	if err != nil || token != "fresh-token" {
+		t.Fatalf("LoginCallback = (%q, %v); want the exchanged token", token, err)
+	}
+
+	_, err = c.LoginCallback(context.Background(), url.Values{"error": {"access_denied"}})
+	if err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("a callback without a code must fail and quote what the broker sent, got %v", err)
 	}
 }

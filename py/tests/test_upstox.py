@@ -1029,3 +1029,25 @@ def test_login_reports_a_non_json_refusal_as_a_failed_exchange() -> None:
     )
     with pytest.raises(RuntimeError, match="HTTP 400"):
         client.login("nope")
+
+
+def test_login_callback_exchanges_the_code_from_the_query() -> None:
+    """The callback owns Upstox's parameter name; a query without one is a refused login, not a KeyError."""
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content.decode())
+        return httpx.Response(200, json={"access_token": "fresh"})
+
+    client = UpstoxClient(
+        api_key="key",
+        api_secret="secret",
+        redirect_uri="http://localhost/cb",
+        instrument_key=lambda k: str(k),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.login_callback({"code": "abc123"}) == "fresh"
+    assert "code=abc123" in sent[0]
+    with pytest.raises(RuntimeError, match="access_denied"):
+        client.login_callback({"error": "access_denied"})
+    assert len(sent) == 1, "a refusal must not reach the token endpoint"

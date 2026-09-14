@@ -29,7 +29,7 @@ go/
   upstox/           HTTP-direct Upstox adapter
   fyers/            one FYERS API v3 adapter, same contract as the other two
   alpaca/           not started
-  harness/          config + Secret, log helpers, decision journal, notifiers
+  harness/          config + Secret, log helpers, decision journal, notifiers, browser login
 
 py/                 one distribution, vendor SDKs as extras
   src/tradekit/core/        mirrors go/core module for module, paper included

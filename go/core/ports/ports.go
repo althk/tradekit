@@ -20,6 +20,7 @@ package ports
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/althk/tradekit/go/core/domain"
@@ -138,6 +139,27 @@ type TokenState interface {
 	// TokenFresh reports whether the current access token is valid for the
 	// current trading day.
 	TokenFresh(ctx context.Context) bool
+}
+
+// BrowserLogin is the redirect-based login every Indian broker uses to issue
+// the day's access token: the user visits LoginURL, the broker sends the
+// browser back to a registered redirect URL with a single-use code in the
+// query string, and the adapter exchanges the code for a token.
+//
+// The callback hands the adapter the whole query rather than a code because
+// the brokers disagree on everything about it: Kite sends request_token,
+// Upstox code, FYERS auth_code plus a state the adapter must verify, and each
+// reports a refused login in its own way. Keeping that inside the adapter is
+// what lets one callback server in harness serve all of them.
+type BrowserLogin interface {
+	// LoginURL is where the user starts. Calling it may begin a login attempt
+	// (FYERS generates the state it later checks), so call it once per attempt.
+	LoginURL() string
+	// LoginCallback takes the query string the broker redirected back with,
+	// exchanges the code in it for an access token, installs the token on the
+	// adapter and returns it so the caller can persist it. A refused login
+	// arrives here too, as an error naming the broker's reason.
+	LoginCallback(ctx context.Context, query url.Values) (string, error)
 }
 
 // Clock is the source of "now". Live code uses the system clock; a backtest
