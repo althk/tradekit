@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/althk/tradekit/go/core/money"
 )
 
 // parityConfig is the shape the config parity block describes. The Python
@@ -113,6 +115,7 @@ type sample struct {
 	Token   Secret        `toml:"token" env:"SAMPLE_TOKEN" validate:"required"`
 	Retries int           `toml:"retries" env:"SAMPLE_RETRIES" validate:"required"`
 	Timeout time.Duration `toml:"timeout" env:"SAMPLE_TIMEOUT"`
+	Limit   money.Money   `toml:"limit" env:"SAMPLE_LIMIT"`
 	Debug   bool          `toml:"debug" env:"SAMPLE_DEBUG"`
 	Nested  struct {
 		Ratio float64 `toml:"ratio" env:"SAMPLE_RATIO"`
@@ -124,6 +127,7 @@ func TestEnvOverrideWinsAndAnUnsetVariableDoesNotBlankTheField(t *testing.T) {
 	t.Setenv("SAMPLE_TOKEN", "from-env")
 	t.Setenv("SAMPLE_RETRIES", "9")
 	t.Setenv("SAMPLE_TIMEOUT", "1m30s")
+	t.Setenv("SAMPLE_LIMIT", "2000.50")
 	t.Setenv("SAMPLE_DEBUG", "true")
 	t.Setenv("SAMPLE_RATIO", "0.25")
 	var cfg sample
@@ -134,8 +138,18 @@ func TestEnvOverrideWinsAndAnUnsetVariableDoesNotBlankTheField(t *testing.T) {
 	if cfg.Name != "from-file" {
 		t.Errorf("an unset variable must leave the file's value alone, got %q", cfg.Name)
 	}
-	if cfg.Token.Reveal() != "from-env" || cfg.Retries != 9 || cfg.Timeout != 90*time.Second || !cfg.Debug || cfg.Nested.Ratio != 0.25 {
+	if cfg.Token.Reveal() != "from-env" || cfg.Retries != 9 || cfg.Timeout != 90*time.Second ||
+		cfg.Limit != 200050 || !cfg.Debug || cfg.Nested.Ratio != 0.25 {
 		t.Errorf("env overrides must win for every supported kind, got %s", Redacted(cfg))
+	}
+}
+
+func TestMoneyOverrideRejectsSubMinorPrecision(t *testing.T) {
+	t.Setenv("SAMPLE_LIMIT", "2000.505")
+	var cfg sample
+	err := Load(writeTOML(t, "name = \"x\"\ntoken = \"y\"\nretries = 1\n"), &cfg)
+	if err == nil || !strings.Contains(err.Error(), "SAMPLE_LIMIT") {
+		t.Errorf("a money value the exchange cannot quote must fail at load and name the variable, got %v", err)
 	}
 }
 

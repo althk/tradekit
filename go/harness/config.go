@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/althk/tradekit/go/core/money"
 )
 
 // Secret is a string that does not appear in logs or error messages.
@@ -73,7 +75,10 @@ func (s Secret) Reveal() string { return string(s) }
 // set and non-empty, after the file is read. An unset or empty variable leaves
 // the file's value alone, so a deployment can override one field without
 // restating the file. Strings, Secret, integers, unsigned integers, floats,
-// booleans and time.Duration are supported; nested structs are walked.
+// booleans, time.Duration and money.Money are supported; nested structs are
+// walked. A money.Money field reads a decimal string ("2000.00"), never bare
+// minor units: an operator who types 2000 means two thousand rupees, and a
+// limit that silently became twenty would not be noticed until it tripped.
 //
 // A field tagged `validate:"required"` must be non-zero after the overlay.
 // Every missing field is reported in one error rather than the first: a
@@ -148,7 +153,10 @@ func walk(v reflect.Value, prefix string, missing *[]string) error {
 	return nil
 }
 
-var durationType = reflect.TypeOf(time.Duration(0))
+var (
+	durationType = reflect.TypeOf(time.Duration(0))
+	moneyType    = reflect.TypeOf(money.Money(0))
+)
 
 // fieldName is the TOML key when tagged, else the Go name, so the error names
 // the key the operator sees in the file.
@@ -173,6 +181,12 @@ func set(fv reflect.Value, raw string) error {
 			return err
 		}
 		fv.SetInt(int64(d))
+	case fv.Type() == moneyType:
+		m, err := money.Parse(raw)
+		if err != nil {
+			return err
+		}
+		fv.SetInt(int64(m))
 	case fv.Kind() == reflect.String:
 		fv.SetString(raw)
 	case fv.Kind() >= reflect.Int && fv.Kind() <= reflect.Int64:
