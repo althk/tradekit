@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from tradekit.core import money
+from tradekit.core.money import Money
 from tradekit.harness import REDACTION, Secret, load, overlay, redacted
 
 FIXTURE = Path(__file__).resolve().parents[3] / "contracts" / "testdata" / "parity.json"
@@ -86,6 +88,7 @@ class Sample:  # noqa: D101
     token: Secret = field(metadata={"env": "SAMPLE_TOKEN"})
     retries: int = field(metadata={"env": "SAMPLE_RETRIES"})
     timeout: dt.timedelta = field(default=dt.timedelta(0), metadata={"env": "SAMPLE_TIMEOUT"})
+    limit: Money = field(default=money.ZERO, metadata={"env": "SAMPLE_LIMIT"})
     debug: bool = field(default=False, metadata={"env": "SAMPLE_DEBUG"})
     nested: Nested = field(default_factory=Nested)
 
@@ -103,14 +106,27 @@ def test_env_override_wins_and_an_unset_variable_does_not_blank_the_field(
     monkeypatch.setenv("SAMPLE_TOKEN", "from-env")
     monkeypatch.setenv("SAMPLE_RETRIES", "9")
     monkeypatch.setenv("SAMPLE_TIMEOUT", "1m30s")
+    monkeypatch.setenv("SAMPLE_LIMIT", "2000.50")
     monkeypatch.setenv("SAMPLE_DEBUG", "true")
     monkeypatch.setenv("SAMPLE_RATIO", "0.25")
     cfg = load(_write(tmp_path, 'name = "from-file"\ntoken = "file-token"\nretries = 2\n'), Sample)
     assert cfg.name == "from-file", "an unset variable must leave the file's value alone"
     assert cfg.token.reveal() == "from-env"
     assert cfg.retries == 9 and cfg.timeout == dt.timedelta(seconds=90) and cfg.debug is True
+    assert cfg.limit == 200050, "a Money override is a decimal string, parsed to minor units"
     assert cfg.nested.ratio == 0.25
     assert isinstance(cfg.token, Secret), "a Secret field stays a Secret whichever source filled it"
+
+
+def test_money_rejects_sub_minor_precision_and_bare_numbers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SAMPLE_LIMIT", "2000.505")
+    with pytest.raises(ValueError, match="SAMPLE_LIMIT"):
+        load(_write(tmp_path, 'name = "x"\ntoken = "y"\nretries = 1\n'), Sample)
+    monkeypatch.delenv("SAMPLE_LIMIT")
+    with pytest.raises(ValueError, match="decimal string"):
+        overlay({"name": "n", "token": "t", "retries": 1, "limit": 2000}, Sample)
+    cfg = overlay({"name": "n", "token": "t", "retries": 1, "limit": "2000.00"}, Sample)
+    assert cfg.limit == 200000, "a decimal string in the file is parsed the same way as one from the environment"
 
 
 def test_an_unparseable_override_names_the_variable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

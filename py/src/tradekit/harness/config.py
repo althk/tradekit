@@ -22,6 +22,9 @@ from dataclasses import MISSING, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
+from ..core import money
+from ..core.money import Money
+
 __all__ = ["REDACTION", "Secret", "load", "overlay", "redacted"]
 
 T = TypeVar("T")
@@ -173,10 +176,17 @@ def _unwrap_optional(hint: Any) -> Any:
 
 
 def _coerce(raw: Any, hint: Any, name: str) -> Any:
-    """Apply the field's type to a TOML value: Secret wraps, Duration parses, else as read."""
+    """Apply the field's type to a TOML value: Secret wraps, Duration and Money parse, else as read."""
     if hint is Secret:
         return Secret(str(raw))
     if hint is dt.timedelta and isinstance(raw, str):
+        return _parse(raw, hint)
+    if hint is Money:
+        # Money is read from a decimal string, never a bare number: 2000 in
+        # a file means two thousand rupees to whoever typed it, and a limit
+        # that silently became twenty would not be noticed until it tripped.
+        if not isinstance(raw, str):
+            raise ValueError(f'harness: {name} must be a decimal string such as "2000.00", got {raw!r}')
         return _parse(raw, hint)
     if hint is float and isinstance(raw, int) and not isinstance(raw, bool):
         return float(raw)
@@ -202,6 +212,8 @@ def _parse(raw: str, hint: Any) -> Any:
         return float(raw)
     if hint is dt.timedelta:
         return _duration(raw)
+    if hint is Money:
+        return money.parse(raw)
     raise ValueError(f"unsupported field type {hint!r} for an env override")
 
 
