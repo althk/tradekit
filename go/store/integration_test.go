@@ -10,6 +10,7 @@ import (
 	"github.com/althk/tradekit/go/core/costs"
 	"github.com/althk/tradekit/go/core/domain"
 	"github.com/althk/tradekit/go/core/money"
+	"github.com/althk/tradekit/go/core/risk"
 )
 
 // openTest returns a migrated in-memory database, or skips.
@@ -748,4 +749,30 @@ func TestRecordFillWritesSignalAndOrderTogether(t *testing.T) {
 		t.Errorf("the signal must be readable after RecordFill, got %d %v", len(sigs), err)
 	}
 
+}
+
+func TestDailyStateSurvivesARestartButNotADayChange(t *testing.T) {
+	db := openTest(t)
+	ctx := t.Context()
+
+	st, err := db.LoadDailyState(ctx, "risk", "2026-01-05")
+	if err != nil || st.Date != "2026-01-05" || st.TradesToday != 0 {
+		t.Fatalf("a cold start must yield empty counters for the day, got %+v %v", st, err)
+	}
+
+	tracker := risk.NewTracker(st)
+	tracker.RecordTrade(testKey)
+	if err := db.SaveDailyState(ctx, "risk", tracker.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := db.LoadDailyState(ctx, "risk", "2026-01-05")
+	if err != nil || again.TradesToday != 1 || again.TradesPerKey[testKey.String()] != 1 {
+		t.Errorf("counters saved today must come back on a restart, got %+v %v", again, err)
+	}
+
+	tomorrow, err := db.LoadDailyState(ctx, "risk", "2026-01-06")
+	if err != nil || tomorrow.TradesToday != 0 || tomorrow.Date != "2026-01-06" {
+		t.Errorf("yesterday's counters must not carry into a new day, got %+v %v", tomorrow, err)
+	}
 }
