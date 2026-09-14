@@ -23,6 +23,19 @@ defer db.Close()
 if err := db.Migrate(ctx); err != nil { ... }
 ```
 
+`store.OpenMigrated(ctx, "sqlite", "app.db")` is the two steps in one for the
+process that owns the file; `Open` alone stays for tools that must not change
+its shape.
+
+## Helpers over the tables
+
+Beyond the row-level writers, a few methods cover the sequences every
+consumer wrote by hand: `WithRun` brackets work in a `runs` row that is
+closed whichever way the work ends, `RecordFill` writes a signal and the
+order it became in one transaction, and `LoadDailyState`/`SaveDailyState`
+keep `risk.DailyState` in `kv_state` with the day-change check applied on
+the way out.
+
 ## Running the tests
 
 The driver-independent tests (migration loading, version bands, filename
