@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tradekit.core import costs, money
+from tradekit.core import costs, money, risk
 from tradekit.core.domain import (
     Candle,
     ExitReason,
@@ -447,6 +447,73 @@ def test_kv_state(db: Database) -> None:
     db.delete_state("risk_state")
     with pytest.raises(StateNotFoundError):
         db.get_state("risk_state")
+
+
+def test_run_finishes_the_run_either_way(db: Database) -> None:
+    def status(run_id: int) -> tuple[str, str]:
+        row = db.conn.execute("SELECT status, message FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return row["status"], row["message"]
+
+    with db.run("live", "test") as ok_id:
+        pass
+    assert status(ok_id) == ("ok", ""), "a block that completes must finish ok"
+
+    with pytest.raises(RuntimeError, match="broker down"), db.run("live", "test") as fail_id:
+        raise RuntimeError("broker down")
+    assert status(fail_id) == ("error", "broker down"), "a failed block must close the run as error with the message"
+
+
+def test_record_fill_writes_signal_and_order_together(db: Database) -> None:
+    at = dt.datetime(2026, 1, 5, 9, 20, tzinfo=UTC)
+    sig = Signal(key=KEY, kind=SignalKind.LONG, at=at, price=money.parse("100.00"), strategy="x")
+    order = Order(
+        id="ORDER-F",
+        request=OrderRequest(key=KEY, side=Side.BUY, quantity=1, type=OrderType.MARKET, product=Product.CNC),
+        status=OrderStatus.COMPLETE,
+        placed_at=at,
+        updated_at=at,
+    )
+    signal_id = db.record_fill(sig, order)
+    assert signal_id > 0, "record_fill must return the signal's row id"
+    assert db.order("ORDER-F").id == "ORDER-F"
+    assert len(db.recent_signals(10)) == 1
+
+
+def test_daily_state_survives_a_restart_but_not_a_day_change(db: Database) -> None:
+    state = db.load_daily_state("risk", "2026-01-05")
+    assert state.date == "2026-01-05" and state.trades_today == 0, "a cold start must yield empty counters"
+
+    tracker = risk.Tracker(state)
+    tracker.record_trade(KEY)
+    db.save_daily_state("risk", tracker.snapshot())
+
+    again = db.load_daily_state("risk", "2026-01-05")
+    assert again.trades_today == 1 and again.trades_per_key[str(KEY)] == 1, (
+        "counters saved today must come back on a restart"
+    )
+    assert set(db.get_state("risk")) == {
+        "date",
+        "trades_today",
+        "trades_per_key",
+        "realized_pnl",
+        "open_positions",
+        "notional_open",
+    }, "the stored shape must be the one go/store writes, kill_switch omitted when empty"
+
+    tomorrow = db.load_daily_state("risk", "2026-01-06")
+    assert tomorrow.trades_today == 0 and tomorrow.date == "2026-01-06", (
+        "yesterday's counters must not carry into a new day"
+    )
+
+
+def test_connect_migrated_is_ready_to_use() -> None:
+    from tradekit.store import connect_migrated
+
+    database = connect_migrated(":memory:")
+    try:
+        assert database.start_run("live", "x") > 0, "the schema must be in place after connect_migrated"
+    finally:
+        database.close()
 
 
 def test_charge_table_round_trip(db: Database) -> None:

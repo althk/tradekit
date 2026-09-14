@@ -12,7 +12,7 @@ from ._base import Base
 from .migrations import MigrationMixin
 from .repos import CandleMixin, InstrumentMixin, MetaMixin, TradingMixin
 
-__all__ = ["Database", "connect"]
+__all__ = ["Database", "connect", "connect_migrated"]
 
 
 class Database(MigrationMixin, InstrumentMixin, CandleMixin, TradingMixin, MetaMixin, Base):
@@ -32,3 +32,24 @@ def connect(
     being able to change its shape. Call :meth:`Database.migrate` for that.
     """
     return Database(path, wal=wal, busy_timeout_ms=busy_timeout_ms, foreign_keys=foreign_keys)
+
+
+def connect_migrated(
+    path: str,
+    *,
+    wal: bool = True,
+    busy_timeout_ms: int = 5000,
+    foreign_keys: bool = True,
+) -> Database:
+    """:func:`connect` followed by :meth:`Database.migrate`, for the process that owns the database.
+
+    It is the first thing every bot's main does; a read-only tool keeps using
+    :func:`connect` so it cannot change the file's shape.
+    """
+    db = connect(path, wal=wal, busy_timeout_ms=busy_timeout_ms, foreign_keys=foreign_keys)
+    try:
+        db.migrate()
+    except BaseException:
+        db.close()
+        raise
+    return db

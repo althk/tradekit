@@ -19,7 +19,7 @@ Conventions:
 """
 
 from ._base import NotFoundError, StateNotFoundError
-from .database import Database, connect
+from .database import Database, connect, connect_migrated
 from .migrations import (
     LIBRARY_MAX_VERSION,
     PROJECT_MIN_VERSION,
@@ -37,5 +37,6 @@ __all__ = [
     "StateNotFoundError",
     "UnknownMigrationError",
     "connect",
+    "connect_migrated",
     "load_migrations",
 ]

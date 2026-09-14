@@ -10,9 +10,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from typing import Any
 
-from ..core import costs, money
+from ..core import costs, money, risk
 from ..core.domain import (
     Candle,
     ExitReason,
@@ -422,6 +424,23 @@ class TradingMixin(Base):
             ),
         )
 
+    def record_fill(self, signal: Signal, order: Order, run_id: int | None = None, paper: bool = False) -> int:
+        """Write the signal that was acted on and the order it produced in one transaction.
+
+        Written separately, a crash between the two leaves a signal with no
+        order or an order with no signal, and the morning's reconciliation
+        cannot tell that from a signal that was skipped. Together they are one
+        fact: this signal became this order.
+
+        Returns:
+            The signal's row id.
+
+        """
+        with self.tx():
+            signal_id = self.insert_signal(signal, run_id, paper)
+            self.upsert_order(order, paper)
+        return signal_id
+
     def set_order_protective(self, order_id: str, protective_id: str) -> None:
         """Record the resting stop placed for a filled order.
 
@@ -663,6 +682,69 @@ class MetaMixin(Base):
             "UPDATE runs SET ended_at = ?, status = ?, message = ? WHERE id = ?",
             (format_time(dt.datetime.now(dt.UTC)), status, message, run_id),
         )
+
+    @contextmanager
+    def run(self, kind: str, name: str = "", params: Any = None) -> Iterator[int]:
+        """Bracket a block in a run: :meth:`start_run` before, :meth:`finish_run` after.
+
+        The run is closed ``"ok"`` when the block completes and ``"error"``
+        with the exception's message when it raises; the exception propagates.
+        A run left ``running`` forever because the process died between the
+        work and ``finish_run`` is the ordinary outcome of writing the bracket
+        by hand at every return; this makes the finish unconditional.
+
+        Yields:
+            The run id, for every row the block writes.
+
+        """
+        run_id = self.start_run(kind, name, params)
+        try:
+            yield run_id
+        except BaseException as exc:
+            # A failure to record the failure must not mask the failure.
+            with suppress(Exception):
+                self.finish_run(run_id, "error", str(exc))
+            raise
+        self.finish_run(run_id, "ok")
+
+    def load_daily_state(self, key: str, date: str) -> risk.DailyState:
+        """The risk counters stored under ``key`` if they belong to ``date``, else empty counters.
+
+        Empty on a cold start, on the first run of a new day, and when the key
+        was written by another date. A read that fails for any other reason
+        propagates, because starting the day with zeroed counters after a
+        failed read is exactly the silent failure the counters exist to prevent.
+
+        The stored shape is the Go library's JSON for ``risk.DailyState``, so
+        the two read each other's rows.
+        """
+        try:
+            raw = self.get_state(key)
+        except StateNotFoundError:
+            return risk.DailyState(date=date)
+        return risk.DailyState(
+            date=str(raw.get("date", "")),
+            trades_today=int(raw.get("trades_today", 0)),
+            trades_per_key={str(k): int(v) for k, v in (raw.get("trades_per_key") or {}).items()},
+            realized_pnl=Money(int(raw.get("realized_pnl", 0))),
+            open_positions=int(raw.get("open_positions", 0)),
+            notional_open=Money(int(raw.get("notional_open", 0))),
+            kill_switch=str(raw.get("kill_switch", "")),
+        ).fresh_for(date)
+
+    def save_daily_state(self, key: str, state: risk.DailyState) -> None:
+        """Persist the counters under ``key``, typically from ``Tracker.snapshot`` after each trade."""
+        value: dict[str, Any] = {
+            "date": state.date,
+            "trades_today": state.trades_today,
+            "trades_per_key": dict(state.trades_per_key),
+            "realized_pnl": int(state.realized_pnl),
+            "open_positions": state.open_positions,
+            "notional_open": int(state.notional_open),
+        }
+        if state.kill_switch:
+            value["kill_switch"] = state.kill_switch
+        self.set_state(key, value)
 
     def upsert_charge_rate(self, broker: str, segment: costs.Segment, kind: costs.Kind, rate: costs.Rate) -> None:
         """Record one effective-dated charge rate."""
