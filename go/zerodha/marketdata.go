@@ -100,7 +100,7 @@ func (c *Client) Candles(ctx context.Context, key domain.InstrumentKey, tf domai
 	if err != nil {
 		return nil, err
 	}
-	token, err := c.instrumentToken(key)
+	token, err := c.instrumentToken(ctx, key)
 	if err != nil {
 		return nil, err
 	}

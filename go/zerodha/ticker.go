@@ -34,7 +34,7 @@ func (c *Client) SubscribeTicks(ctx context.Context, keys []domain.InstrumentKey
 	tokens := make([]uint32, 0, len(keys))
 	byToken := make(map[uint32]domain.InstrumentKey, len(keys))
 	for _, k := range keys {
-		token, err := c.instrumentToken(k)
+		token, err := c.instrumentToken(ctx, k)
 		if err != nil {
 			return err
 		}

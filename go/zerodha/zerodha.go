@@ -64,11 +64,16 @@ type Options struct {
 	TokenIssuedAt time.Time
 
 	// InstrumentToken resolves an instrument to Kite's numeric token, which
-	// the historical endpoint requires and no other call does.
+	// the historical endpoint and the tick stream require and no other call
+	// does.
 	//
 	// It is a function rather than a lookup inside this package so the
 	// adapter does not depend on the store: wire it to the store's
 	// BrokerID, to an in-memory map, or to whatever the project already has.
+	// Left nil, the client downloads the exchange's instrument list from
+	// Kite on first use and keeps it for its lifetime -- one request per
+	// exchange per process, which is the right trade for a bot that watches
+	// a handful of symbols and has no store of its own.
 	InstrumentToken func(domain.InstrumentKey) (int, error)
 
 	// RequestsPerSecond paces every call except historical data.
@@ -100,6 +105,11 @@ type Client struct {
 	mu            sync.RWMutex
 	accessToken   string
 	tokenIssuedAt time.Time
+
+	// tokens is the per-exchange token cache used when Options.InstrumentToken
+	// is nil, filled on first use under tokensMu.
+	tokensMu sync.Mutex
+	tokens   map[string]map[domain.InstrumentKey]int
 }
 
 // New returns a client. It does not contact the broker: a token supplied in
@@ -237,12 +247,17 @@ func (c *Client) call(ctx context.Context, fn func() error) error {
 	return classify(fn())
 }
 
-// instrumentToken resolves the numeric token the historical endpoint needs.
-func (c *Client) instrumentToken(key domain.InstrumentKey) (int, error) {
-	if c.opts.InstrumentToken == nil {
-		return 0, fmt.Errorf("zerodha: Options.InstrumentToken is not set; historical data needs Kite's numeric token for %s", key)
+// instrumentToken resolves the numeric token the historical endpoint and the
+// ticker need, through Options.InstrumentToken when set and the client's own
+// lazily downloaded cache otherwise.
+func (c *Client) instrumentToken(ctx context.Context, key domain.InstrumentKey) (int, error) {
+	var token int
+	var err error
+	if c.opts.InstrumentToken != nil {
+		token, err = c.opts.InstrumentToken(key)
+	} else {
+		token, err = c.cachedToken(ctx, key)
 	}
-	token, err := c.opts.InstrumentToken(key)
 	if err != nil {
 		return 0, fmt.Errorf("zerodha: resolving instrument token for %s: %w", key, err)
 	}
@@ -250,4 +265,25 @@ func (c *Client) instrumentToken(key domain.InstrumentKey) (int, error) {
 		return 0, fmt.Errorf("zerodha: no instrument token known for %s", key)
 	}
 	return token, nil
+}
+
+// cachedToken looks a key up in the exchange's token map, downloading the map
+// on the first miss for that exchange. A failed download is not cached, so a
+// transient error on the first call does not poison the process.
+func (c *Client) cachedToken(ctx context.Context, key domain.InstrumentKey) (int, error) {
+	c.tokensMu.Lock()
+	defer c.tokensMu.Unlock()
+	byKey, ok := c.tokens[key.Exchange]
+	if !ok {
+		var err error
+		byKey, err = c.InstrumentTokens(ctx, key.Exchange)
+		if err != nil {
+			return 0, err
+		}
+		if c.tokens == nil {
+			c.tokens = map[string]map[domain.InstrumentKey]int{}
+		}
+		c.tokens[key.Exchange] = byKey
+	}
+	return byKey[key], nil
 }
