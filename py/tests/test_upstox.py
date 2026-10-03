@@ -835,6 +835,20 @@ def test_parse_instrument_csv_handles_both_encodings(compress):
     assert instruments["Nifty 50"].segment == "index"
 
 
+def test_instruments_read_the_isin_from_the_key_when_the_column_is_absent() -> None:
+    # The master Upstox actually publishes has no isin column: a cash equity's
+    # ISIN exists only as the id half of its instrument key.
+    published = (
+        "instrument_key,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,"
+        "instrument_type,option_type,exchange\n"
+        "NSE_EQ|INE002A01018,2885,RELIANCE,RELIANCE INDUSTRIES LTD,0,,,0.1,1,EQUITY,,NSE_EQ\n"
+        "NSE_FO|54321,54321,NIFTY24500CE,NIFTY,0,2025-04-17,24500,0.05,75,CE,CE,NSE_FO\n"
+    )
+    got = {i.key.symbol: i for i in parse_instrument_csv(published.encode())}
+    assert got["RELIANCE"].isin == "INE002A01018", "a cash equity's ISIN must come from its key"
+    assert got["NIFTY24500CE"].isin == "", "a derivative's key is an exchange token, not an ISIN"
+
+
 def test_parse_instrument_keys_reads_the_raw_key_per_instrument() -> None:
     keys = parse_instrument_keys(INSTRUMENT_CSV.encode())
     assert keys[RELIANCE] == "NSE_EQ|INE002A01018"

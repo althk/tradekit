@@ -1071,14 +1071,19 @@ def parse_instrument_keys(raw: bytes) -> dict[InstrumentKey, str]:
 def parse_instrument_csv(raw: bytes) -> list[Instrument]:
     """Parse the instrument master into reference data."""
     out: list[Instrument] = []
-    for cells, key, _, segment in _master_rows(raw):
+    for cells, key, raw_key, segment in _master_rows(raw):
         instrument_type = cells.get("instrument_type", "")
         lot_size = _int_or(cells.get("lot_size", ""), 1)
+        isin = cells.get("isin", "")
+        if not isin and segment.upper().endswith("_EQ"):
+            # The published CSV master has no isin column; a cash
+            # instrument's key is its ISIN, so read it from there.
+            isin = parse_instrument_key(raw_key)[1]
         out.append(
             Instrument(
                 key=key,
                 name=cells.get("name", ""),
-                isin=cells.get("isin", ""),
+                isin=isin,
                 segment=segment_of(instrument_type, segment),
                 # The master reports 0 for cash equity; the domain uses 1 so
                 # sizing can multiply by it unconditionally.
