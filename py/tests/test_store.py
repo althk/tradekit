@@ -622,3 +622,12 @@ def test_timestamps_survive_a_zone_round_trip(db: Database) -> None:
     got = db.candles(KEY, Timeframe.M5, start - dt.timedelta(days=1), start + dt.timedelta(days=1))
     assert len(got) == 1
     assert got[0].start == start
+
+
+def test_format_time_is_fixed_width_utc() -> None:
+    from tradekit.store._base import format_time
+
+    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    assert format_time(dt.datetime(2025, 4, 17, 9, 15, 0, 150000, tzinfo=ist)) == "2025-04-17T03:45:00.150000Z", (
+        "every stored timestamp must be UTC at one width, the string Go writes, or range queries misorder rows"
+    )

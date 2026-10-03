@@ -19,6 +19,22 @@ import (
 // volume for an old bar. Keeping the first value read makes a backtest
 // reproducible; overwriting would silently change yesterday's results.
 func (d *DB) UpsertCandles(ctx context.Context, candles []domain.Candle) (int, error) {
+	return d.writeCandles(ctx, candles, "IGNORE")
+}
+
+// ReplaceCandles stores bars, overwriting any already held at the same start.
+//
+// It exists for one bar: the newest one stored, which may have been fetched
+// while it was still forming. Incremental sync re-requests that bar and
+// replaces it, so a daily bar read at 11:00 does not keep its 11:00 close
+// forever. Every older bar still goes through UpsertCandles and stays as first
+// read.
+func (d *DB) ReplaceCandles(ctx context.Context, candles []domain.Candle) (int, error) {
+	return d.writeCandles(ctx, candles, "REPLACE")
+}
+
+// writeCandles inserts bars with the given conflict resolution.
+func (d *DB) writeCandles(ctx context.Context, candles []domain.Candle, onConflict string) (int, error) {
 	if len(candles) == 0 {
 		return 0, nil
 	}
@@ -26,7 +42,7 @@ func (d *DB) UpsertCandles(ctx context.Context, candles []domain.Candle) (int, e
 	var inserted int
 	err := d.inTx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx, `
-			INSERT OR IGNORE INTO candles
+			INSERT OR `+onConflict+` INTO candles
 				(exchange, symbol, timeframe, start, open, high, low, close, volume, open_interest)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
@@ -96,11 +112,14 @@ func (d *DB) LastCandleStart(ctx context.Context, key domain.InstrumentKey, tf d
 	err := d.db.QueryRowContext(ctx,
 		`SELECT max(start) FROM candles WHERE exchange = ? AND symbol = ? AND timeframe = ?`,
 		key.Exchange, key.Symbol, string(tf)).Scan(&start)
-	if errors.Is(err, sql.ErrNoRows) || !start.Valid {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
+	// The error is checked first: a failed query also leaves start invalid,
+	// and reading that as "nothing stored" would send a sync back to re-fetch
+	// the whole lookback on a busy database.
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, false, fmt.Errorf("store: reading last candle for %s: %w", key, err)
+	}
+	if err != nil || !start.Valid {
+		return time.Time{}, false, nil
 	}
 	t, err := parseTime(start.String)
 	if err != nil {

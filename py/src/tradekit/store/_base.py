@@ -36,19 +36,24 @@ class StateNotFoundError(NotFoundError):
     """
 
 
-def format_time(t: dt.datetime) -> str:
-    """Render a timestamp for storage: ISO-8601 with an explicit offset.
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+"""The one form every stored timestamp takes: UTC, microseconds, fixed width.
 
-    Stored timestamps sort lexicographically and carry their zone, which is what
-    lets range queries work without a conversion function in the SQL.
-    """
+Go's ``store.TimeLayout`` writes the identical string. Range queries compare
+timestamps as text, which is correct only when every row has the same zone and
+the same width.
+"""
+
+
+def format_time(t: dt.datetime) -> str:
+    """Render a timestamp for storage in :data:`TIME_FORMAT`."""
     if t.tzinfo is None:
         raise ValueError("store: refusing to store a naive datetime; attach a timezone")
-    return t.isoformat()
+    return t.astimezone(dt.UTC).strftime(TIME_FORMAT)
 
 
 def parse_time(s: str) -> dt.datetime:
-    """Read a stored timestamp."""
+    """Read a stored timestamp, in any ISO-8601 form a row written before migration 004 used."""
     return dt.datetime.fromisoformat(s)
 
 

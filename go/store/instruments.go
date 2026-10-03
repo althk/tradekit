@@ -16,6 +16,11 @@ import (
 // It is one transaction for the whole batch: a partially-refreshed universe is
 // worse than a stale one, because a scan over it would silently cover only the
 // symbols that happened to be written before the failure.
+//
+// A field the incoming row does not know -- an empty name or ISIN, a zero lot
+// or tick size -- keeps the value already stored. An index constituent list
+// carries no tick size, and writing a default over the broker master's real
+// one puts every stop for a ₹0.10-tick name off the exchange's grid.
 func (d *DB) UpsertInstruments(ctx context.Context, instruments []domain.Instrument) error {
 	if len(instruments) == 0 {
 		return nil
@@ -29,11 +34,11 @@ func (d *DB) UpsertInstruments(ctx context.Context, instruments []domain.Instrum
 				 expiry, strike, option_type, active, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(exchange, symbol) DO UPDATE SET
-				name        = excluded.name,
-				isin        = excluded.isin,
+				name        = CASE WHEN excluded.name <> '' THEN excluded.name ELSE instruments.name END,
+				isin        = CASE WHEN excluded.isin <> '' THEN excluded.isin ELSE instruments.isin END,
 				segment     = excluded.segment,
-				lot_size    = excluded.lot_size,
-				tick_size   = excluded.tick_size,
+				lot_size    = CASE WHEN excluded.lot_size > 0 THEN excluded.lot_size ELSE instruments.lot_size END,
+				tick_size   = CASE WHEN excluded.tick_size > 0 THEN excluded.tick_size ELSE instruments.tick_size END,
 				expiry      = excluded.expiry,
 				strike      = excluded.strike,
 				option_type = excluded.option_type,
@@ -220,24 +225,39 @@ func (d *DB) DeactivateMissing(ctx context.Context, exchange string, keep []doma
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	if len(stale) == 0 {
+	keys := make([]domain.InstrumentKey, 0, len(stale))
+	for _, symbol := range stale {
+		keys = append(keys, domain.InstrumentKey{Exchange: exchange, Symbol: symbol})
+	}
+	return d.DeactivateInstruments(ctx, keys)
+}
+
+// DeactivateInstruments marks the given instruments inactive, in one
+// transaction, and reports how many were active before.
+func (d *DB) DeactivateInstruments(ctx context.Context, keys []domain.InstrumentKey) (int, error) {
+	if len(keys) == 0 {
 		return 0, nil
 	}
-
 	now := formatTime(time.Now().UTC())
-	err = d.inTx(ctx, func(tx *sql.Tx) error {
-		for _, symbol := range stale {
-			_, err := tx.ExecContext(ctx,
-				`UPDATE instruments SET active = 0, updated_at = ? WHERE exchange = ? AND symbol = ?`,
-				now, exchange, symbol)
+	changed := 0
+	err := d.inTx(ctx, func(tx *sql.Tx) error {
+		for _, k := range keys {
+			res, err := tx.ExecContext(ctx,
+				`UPDATE instruments SET active = 0, updated_at = ? WHERE exchange = ? AND symbol = ? AND active = 1`,
+				now, k.Exchange, k.Symbol)
 			if err != nil {
-				return fmt.Errorf("store: deactivating %s:%s: %w", exchange, symbol, err)
+				return fmt.Errorf("store: deactivating %s: %w", k, err)
 			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			changed += int(n)
 		}
 		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
-	return len(stale), nil
+	return changed, nil
 }

@@ -64,6 +64,11 @@ class InstrumentMixin(Base):
         One transaction for the whole batch: a partially-refreshed universe is
         worse than a stale one, because a scan over it would silently cover only
         the symbols written before the failure.
+
+        A field the incoming row does not know -- an empty name or ISIN, a zero
+        lot or tick size -- keeps the value already stored. An index constituent
+        list carries no tick size, and writing a default over the broker
+        master's real one puts every stop for a 0.10-tick name off the grid.
         """
         if not instruments:
             return
@@ -76,8 +81,11 @@ class InstrumentMixin(Base):
                      expiry, strike, option_type, active, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(exchange, symbol) DO UPDATE SET
-                    name = excluded.name, isin = excluded.isin, segment = excluded.segment,
-                    lot_size = excluded.lot_size, tick_size = excluded.tick_size,
+                    name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE instruments.name END,
+                    isin = CASE WHEN excluded.isin <> '' THEN excluded.isin ELSE instruments.isin END,
+                    segment = excluded.segment,
+                    lot_size = CASE WHEN excluded.lot_size > 0 THEN excluded.lot_size ELSE instruments.lot_size END,
+                    tick_size = CASE WHEN excluded.tick_size > 0 THEN excluded.tick_size ELSE instruments.tick_size END,
                     expiry = excluded.expiry, strike = excluded.strike,
                     option_type = excluded.option_type, active = excluded.active,
                     updated_at = excluded.updated_at
@@ -204,16 +212,30 @@ class InstrumentMixin(Base):
         rows = self.conn.execute(
             "SELECT symbol FROM instruments WHERE exchange = ? AND active = 1", (exchange,)
         ).fetchall()
-        stale = [r["symbol"] for r in rows if r["symbol"] not in present]
-        if not stale:
+        return self.deactivate_instruments(
+            [InstrumentKey(exchange, r["symbol"]) for r in rows if r["symbol"] not in present]
+        )
+
+    def deactivate_instruments(self, keys: list[InstrumentKey]) -> int:
+        """Mark the given instruments inactive, in one transaction.
+
+        Returns:
+            How many of them were active before.
+
+        """
+        if not keys:
             return 0
         now = format_time(dt.datetime.now(dt.UTC))
+        changed = 0
         with self.tx() as conn:
-            conn.executemany(
-                "UPDATE instruments SET active = 0, updated_at = ? WHERE exchange = ? AND symbol = ?",
-                [(now, exchange, s) for s in stale],
-            )
-        return len(stale)
+            for k in keys:
+                cur = conn.execute(
+                    "UPDATE instruments SET active = 0, updated_at = ?"
+                    " WHERE exchange = ? AND symbol = ? AND active = 1",
+                    (now, k.exchange, k.symbol),
+                )
+                changed += cur.rowcount
+        return changed
 
 
 class CandleMixin(Base):
@@ -232,13 +254,31 @@ class CandleMixin(Base):
             How many rows were new.
 
         """
+        return self._write_candles(candles, "IGNORE")
+
+    def replace_candles(self, candles: list[Candle]) -> int:
+        """Store bars, overwriting any already held at the same start.
+
+        It exists for one bar: the newest one stored, which may have been
+        fetched while still forming. Incremental sync re-requests that bar and
+        replaces it, so a daily bar read at 11:00 does not keep its 11:00 close
+        forever. Every older bar still goes through :meth:`upsert_candles`.
+
+        Returns:
+            How many rows were written.
+
+        """
+        return self._write_candles(candles, "REPLACE")
+
+    def _write_candles(self, candles: list[Candle], on_conflict: str) -> int:
+        """Insert bars with the given conflict resolution."""
         if not candles:
             return 0
         before = self.conn.total_changes
         with self.tx() as conn:
             conn.executemany(
-                """
-                INSERT OR IGNORE INTO candles
+                f"""
+                INSERT OR {on_conflict} INTO candles
                     (exchange, symbol, timeframe, start, open, high, low, close, volume, open_interest)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,

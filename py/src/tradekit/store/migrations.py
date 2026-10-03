@@ -148,8 +148,17 @@ class MigrationMixin(Base):
                 )
 
     def applied_versions(self) -> list[int]:
-        """The recorded migration versions, ascending."""
-        self._ensure_migrations_table()
+        """The recorded migration versions, ascending.
+
+        It only reads: a database with no ledger reports no versions rather than
+        being given one, so a read-only tool calling it leaves the file
+        unchanged.
+        """
+        exists = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if not exists["n"]:
+            return []
         rows = self.conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         return [r["version"] for r in rows]
 
@@ -168,6 +177,14 @@ class MigrationMixin(Base):
             )
             """
         )
+        # Another migration tool's ledger of the same name (golang-migrate uses
+        # version and dirty) must not be migrated on top of.
+        columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(schema_migrations)").fetchall()}
+        if not {"version", "name", "applied_at"} <= columns:
+            raise RuntimeError(
+                "store: schema_migrations exists but is not tradekit's ledger (another migration tool's?); "
+                "rename it before migrating"
+            )
 
 
 def _split_statements(sql: str) -> list[str]:

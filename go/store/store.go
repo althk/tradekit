@@ -21,9 +21,10 @@
 // # Conventions
 //
 //   - Money is stored as INTEGER minor units, matching core/money.
-//   - Timestamps are TEXT in RFC3339 with an explicit offset, so they sort
-//     lexicographically and carry their zone. Use the package's own conversion
-//     helpers rather than formatting them at call sites.
+//   - Timestamps are TEXT in TimeLayout -- UTC, microseconds, fixed width --
+//     so that string comparison is time comparison. Use FormatTime rather
+//     than formatting them at call sites; migration 004 converted rows
+//     written before this rule.
 //   - Dates (holidays, effective-from) are TEXT "2006-01-02".
 package store
 
@@ -176,11 +177,25 @@ func (d *DB) SQL() *sql.DB { return d.db }
 // Close closes the database.
 func (d *DB) Close() error { return d.db.Close() }
 
-// formatTime renders a timestamp for storage: RFC3339 with an offset, at
-// nanosecond precision so a round trip is lossless.
-func formatTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
+// TimeLayout is the one form every stored timestamp takes: UTC, microsecond
+// precision, fixed width. Python's store writes the identical string.
+//
+// Range queries compare timestamps as text, which is correct only when every
+// row has the same zone and the same width. Writing in the caller's zone, as
+// RFC 3339 allows, made "...T10:00:00Z" sort before "...T15:15:00+05:30", and
+// trimming trailing zeros made ".15Z" sort before ".1Z". Microseconds rather
+// than nanoseconds because Python's datetime holds no finer.
+const TimeLayout = "2006-01-02T15:04:05.000000Z"
 
-// parseTime reads a stored timestamp.
+// FormatTime renders a timestamp in TimeLayout. Every module writing a
+// timestamp into a library table goes through it.
+func FormatTime(t time.Time) string { return t.UTC().Format(TimeLayout) }
+
+// formatTime is FormatTime, under the name this package's queries use.
+func formatTime(t time.Time) string { return FormatTime(t) }
+
+// parseTime reads a stored timestamp. It accepts any RFC 3339 form, so a row
+// written before migration 004 still reads.
 func parseTime(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil

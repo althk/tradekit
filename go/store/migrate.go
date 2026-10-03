@@ -214,12 +214,17 @@ func (d *DB) ensureMigrationsTable(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("store: creating schema_migrations: %w", err)
 	}
-	return nil
+	return checkLedgerShape(ctx, d.db)
 }
 
 // AppliedVersions returns the recorded migration versions, ascending.
+//
+// It only reads: a database with no ledger reports no versions rather than
+// being given one, so a read-only tool calling it leaves the file unchanged --
+// and AdoptLegacy still sees an unadopted database.
 func (d *DB) AppliedVersions(ctx context.Context) ([]int, error) {
-	if err := d.ensureMigrationsTable(ctx); err != nil {
+	exists, err := TableExists(ctx, d.db, "schema_migrations")
+	if err != nil || !exists {
 		return nil, err
 	}
 	rows, err := d.db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)

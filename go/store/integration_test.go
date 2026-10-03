@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -774,5 +776,146 @@ func TestDailyStateSurvivesARestartButNotADayChange(t *testing.T) {
 	tomorrow, err := db.LoadDailyState(ctx, "risk", "2026-01-06")
 	if err != nil || tomorrow.TradesToday != 0 || tomorrow.Date != "2026-01-06" {
 		t.Errorf("yesterday's counters must not carry into a new day, got %+v %v", tomorrow, err)
+	}
+}
+
+func TestAdoptLegacyRecoversAfterAFailedFirstMigration(t *testing.T) {
+	db := openRawTest(t)
+	ctx := t.Context()
+	sqlDB := db.SQL()
+	if _, err := sqlDB.ExecContext(ctx, `CREATE TABLE orders (order_id TEXT PRIMARY KEY, symbol TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	// Migrating without adopting first fails on the legacy orders table and
+	// rolls back, but leaves an empty ledger behind.
+	if err := db.Migrate(ctx); err == nil {
+		t.Fatal("expected the first migration to fail against a legacy orders table")
+	}
+	if err := AdoptLegacy(ctx, sqlDB, "orders"); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _ := TableExists(ctx, sqlDB, "orders_legacy"); !exists {
+		t.Fatal("an empty ledger was read as adopted; the legacy table was never moved aside and the database is stuck")
+	}
+	if err := db.Migrate(ctx); err != nil {
+		t.Errorf("Migrate after recovery: %v", err)
+	}
+}
+
+func TestAdoptLegacyRefusesAnotherToolsLedger(t *testing.T) {
+	db := openRawTest(t)
+	ctx := t.Context()
+	if _, err := db.SQL().ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER, dirty INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := AdoptLegacy(ctx, db.SQL(), "orders"); !errors.Is(err, ErrForeignLedger) {
+		t.Errorf("err = %v, want ErrForeignLedger for a golang-migrate ledger", err)
+	}
+}
+
+func TestAdoptLegacyLeavesOtherTablesForeignKeysAlone(t *testing.T) {
+	db := openRawTest(t)
+	ctx := t.Context()
+	sqlDB := db.SQL()
+	for _, q := range []string{
+		`CREATE TABLE orders (order_id TEXT PRIMARY KEY)`,
+		`CREATE TABLE fills (id INTEGER PRIMARY KEY, order_id TEXT REFERENCES orders(order_id))`,
+	} {
+		if _, err := sqlDB.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := AdoptLegacy(ctx, sqlDB, "orders"); err != nil {
+		t.Fatal(err)
+	}
+	var ddl string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE name = 'fills'`).Scan(&ddl); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ddl, "orders_legacy") {
+		t.Errorf("fills now references the legacy table: %s", ddl)
+	}
+}
+
+func TestAppliedVersionsDoesNotCreateTheLedger(t *testing.T) {
+	db := openRawTest(t)
+	if _, err := db.AppliedVersions(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _ := TableExists(t.Context(), db.SQL(), "schema_migrations"); exists {
+		t.Error("a read created schema_migrations, changing the file's shape")
+	}
+}
+
+func TestMigration004CanonicalisesStoredTimestamps(t *testing.T) {
+	db := openRawTest(t)
+	ctx := t.Context()
+	all, err := LoadMigrations(schemaFS, "schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, v4 []Migration
+	for _, m := range all {
+		if m.Version < 4 {
+			before = append(before, m)
+		} else if m.Version == 4 {
+			v4 = append(v4, m)
+		}
+	}
+	if err := db.Apply(ctx, before); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB := db.SQL()
+	for _, q := range []string{
+		`INSERT INTO instruments (exchange, symbol, name, isin, segment, lot_size, tick_size, active, updated_at)
+		 VALUES ('NSE', 'X', '', '', 'equity', 1, 5, 1, '2025-04-17T09:20:00+05:30')`,
+		// One bar under two spellings of the same instant: Go's old IST form
+		// and Python's old UTC form.
+		`INSERT INTO candles (exchange, symbol, timeframe, start, open, high, low, close, volume, open_interest)
+		 VALUES ('NSE', 'X', '5m', '2025-04-17T09:15:00+05:30', 1, 1, 1, 1, 10, 0)`,
+		`INSERT INTO candles (exchange, symbol, timeframe, start, open, high, low, close, volume, open_interest)
+		 VALUES ('NSE', 'X', '5m', '2025-04-17T03:45:00+00:00', 2, 2, 2, 2, 20, 0)`,
+		`INSERT INTO candles (exchange, symbol, timeframe, start, open, high, low, close, volume, open_interest)
+		 VALUES ('NSE', 'X', '5m', '2025-04-17T09:20:00.5+05:30', 3, 3, 3, 3, 30, 0)`,
+	} {
+		if _, err := sqlDB.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Apply(ctx, append(before, v4...)); err != nil {
+		t.Fatalf("applying 004: %v", err)
+	}
+
+	rows, err := sqlDB.QueryContext(ctx, `SELECT start, volume FROM candles ORDER BY start`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var start string
+		var vol int64
+		if err := rows.Scan(&start, &vol); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s/%d", start, vol))
+	}
+	want := []string{"2025-04-17T03:45:00.000000Z/10", "2025-04-17T03:50:00.500000Z/30"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("candles = %v, want %v: one canonical row per instant, the first spelling kept", got, want)
+	}
+	var updated string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT updated_at FROM instruments`).Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated != "2025-04-17T03:50:00.000000Z" {
+		t.Errorf("updated_at = %q, want the canonical UTC form", updated)
+	}
+}
+
+func TestFormatTimeIsFixedWidthUTC(t *testing.T) {
+	ist := time.FixedZone("IST", 5*3600+1800)
+	if got := FormatTime(time.Date(2025, 4, 17, 9, 15, 0, 150_000_000, ist)); got != "2025-04-17T03:45:00.150000Z" {
+		t.Errorf("FormatTime = %q: every stored timestamp must be UTC at one width, or string range queries misorder rows", got)
 	}
 }

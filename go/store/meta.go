@@ -106,8 +106,10 @@ func (d *DB) WithRun(ctx context.Context, kind, name string, params any, fn func
 	}
 	if err := fn(ctx, runID); err != nil {
 		// The finish error is deliberately discarded: the caller needs to
-		// see why the work failed, not why the bookkeeping did.
-		_ = d.FinishRun(ctx, runID, "error", err.Error())
+		// see why the work failed, not why the bookkeeping did. The record
+		// is written on a context that ignores cancellation, because a
+		// cancelled run is exactly the one that must not stay "running".
+		_ = d.FinishRun(context.WithoutCancel(ctx), runID, "error", err.Error())
 		return err
 	}
 	return d.FinishRun(ctx, runID, "ok", "")
