@@ -75,6 +75,11 @@ const (
 	StatusComplete  OrderStatus = "complete"
 	StatusCancelled OrderStatus = "cancelled"
 	StatusRejected  OrderStatus = "rejected"
+	// StatusTriggered is a stop or stop-limit order resting until its
+	// trigger price trades: Kite's and Upstox's "TRIGGER PENDING". Despite
+	// the name it has NOT fired yet; a stop that fired becomes Open or
+	// Complete. FYERS does not distinguish the state and reports such an
+	// order as Open.
 	StatusTriggered OrderStatus = "triggered"
 )
 

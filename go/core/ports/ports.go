@@ -152,6 +152,17 @@ type TokenState interface {
 // can errors.Is for it without importing every adapter.
 var ErrTokenExpired = errors.New("access token expired")
 
+// ErrUnknownOutcome reports that a request which changes broker state -- placing
+// or cancelling an order, placing or moving a protective -- failed in a way that
+// does not say whether the broker acted on it: a timeout after the request was
+// sent, a 5xx, a success response that would not decode.
+//
+// It is deliberately not "transient". Retrying a placement whose first attempt
+// may have reached the exchange is how a strategy ends up with two orders and a
+// position twice the size it sized. The remedy is to reconcile -- read the
+// order book or the protective list -- and only then decide.
+var ErrUnknownOutcome = errors.New("request outcome unknown")
+
 // BrowserLogin is the redirect-based login every Indian broker uses to issue
 // the day's access token: the user visits LoginURL, the broker sends the
 // browser back to a registered redirect URL with a single-use code in the

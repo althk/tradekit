@@ -93,6 +93,9 @@ class OrderStatus(StrEnum):
     CANCELLED = "cancelled"
     REJECTED = "rejected"
     TRIGGERED = "triggered"
+    """A stop or stop-limit order resting until its trigger price trades: Kite's and
+    Upstox's "TRIGGER PENDING". Despite the name it has NOT fired yet. FYERS does
+    not distinguish the state and reports such an order as OPEN."""
 
     @property
     def terminal(self) -> bool:

@@ -58,6 +58,7 @@ __all__ = [
     "TickObserver",
     "TokenExpiredError",
     "TokenState",
+    "UnknownOutcomeError",
 ]
 
 
@@ -190,6 +191,18 @@ class TokenExpiredError(Exception):
     its API error, so code written against the ports here -- session reuse in
     ``harness``, a scheduler's pre-open check -- can catch it without importing
     every adapter.
+    """
+
+
+class UnknownOutcomeError(Exception):
+    """A state-changing request failed without saying whether the broker acted.
+
+    Raised for placing or cancelling an order, or placing or moving a
+    protective, when the failure came after the request may have been sent: a
+    timeout waiting for the answer, a 5xx, a success response that would not
+    decode. It is deliberately not transient. Retrying a placement whose first
+    attempt may have reached the exchange is how a strategy ends up with two
+    orders; the remedy is to reconcile against the order book first.
     """
 
 
