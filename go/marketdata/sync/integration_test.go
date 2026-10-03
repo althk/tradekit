@@ -128,8 +128,11 @@ func TestIncrementalBackfillResumesFromTheLastStoredBar(t *testing.T) {
 	all := dailyBars(reliance, now, 10)
 	history := &fakeHistory{bars: map[domain.InstrumentKey][]domain.Candle{reliance: all}}
 
-	// Seed the first five bars, as a previous run would have.
-	if _, err := db.UpsertCandles(t.Context(), all[:5]); err != nil {
+	// Seed the first five bars, as a previous run would have -- the fifth
+	// read while still forming, with a partial close and volume.
+	seed := append([]domain.Candle(nil), all[:5]...)
+	seed[4].Close, seed[4].Volume = seed[4].Close-100, seed[4].Volume/2
+	if _, err := db.UpsertCandles(t.Context(), seed); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
@@ -144,9 +147,17 @@ func TestIncrementalBackfillResumesFromTheLastStoredBar(t *testing.T) {
 		t.Errorf("only the five bars after the last stored one are new, got %d", report.Inserted)
 	}
 	from := history.requests[0].from
-	if !from.After(all[4].Start) {
-		t.Errorf("the request must start after the last stored bar, not at it — starting at it re-requests a stored bar on every run. got %v, last stored %v",
+	if !from.Equal(all[4].Start) {
+		t.Errorf("the request must start at the last stored bar, which may have been partial; got %v, last stored %v",
 			from, all[4].Start)
+	}
+	stored, err := db.Candles(t.Context(), reliance, domain.D1, all[4].Start, all[4].Start)
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("reading the refreshed bar: %v %v", stored, err)
+	}
+	if stored[0].Close != all[4].Close || stored[0].Volume != all[4].Volume {
+		t.Errorf("last bar = %s / %d, want the final %s / %d: a partial bar must not be frozen",
+			stored[0].Close, stored[0].Volume, all[4].Close, all[4].Volume)
 	}
 }
 

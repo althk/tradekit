@@ -99,8 +99,10 @@ func (r *Runner) Run(ctx context.Context, tasks []Task) (RunReport, error) {
 
 	pending := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
-		if _, done := state.Done[task.ID]; done {
-			// Handled earlier in the run this one is resuming.
+		if outcome, done := state.Done[task.ID]; done && outcome != "error" {
+			// Handled earlier in the run this one is resuming. A task that
+			// failed there is attempted again: skipping it would let the
+			// resumed pass finish "ok" with that failure forgotten.
 			report.Skipped++
 			continue
 		}
@@ -140,17 +142,16 @@ func (r *Runner) Run(ctx context.Context, tasks []Task) (RunReport, error) {
 }
 
 // drive fetches concurrently and persists serially.
+//
+// Each result is persisted as soon as every task before it has been, rather
+// than after the whole pool finishes. A run killed partway through then keeps
+// everything up to the first unfinished task, which is what lets it resume at
+// symbol 251 instead of fetching all 500 again.
 func (r *Runner) drive(ctx context.Context, tasks []Task, state *progress, report *RunReport, now time.Time) error {
 	if len(tasks) == 0 {
 		return nil
 	}
-	workers := r.Workers
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > len(tasks) {
-		workers = len(tasks)
-	}
+	workers := min(max(r.Workers, 1), len(tasks))
 
 	type result struct {
 		index   int
@@ -158,22 +159,23 @@ func (r *Runner) drive(ctx context.Context, tasks []Task, state *progress, repor
 		err     error
 	}
 
-	// Fetches are dispatched by index and results collected by index, so the
-	// persist order matches the task order however the pool completes. A
-	// resumed run then stops at a prefix rather than at a scatter of
-	// finished tasks, which is what makes the resume record small and its
-	// meaning obvious.
-	results := make([]result, len(tasks))
-	var wg sync.WaitGroup
-	indices := make(chan int)
+	// fetchCtx stops the pool early when persisting fails; persistCtx outlives
+	// the caller's cancellation, so fetches that completed before a cancel
+	// are still recorded rather than thrown away.
+	fetchCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	persistCtx := context.WithoutCancel(ctx)
 
+	results := make(chan result)
+	indices := make(chan int)
+	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range indices {
-				results[i] = result{index: i}
-				results[i].fetched, results[i].err = fetchSafe(ctx, tasks[i])
+				fetched, err := fetchSafe(fetchCtx, tasks[i])
+				results <- result{index: i, fetched: fetched, err: err}
 			}
 		}()
 	}
@@ -181,44 +183,77 @@ func (r *Runner) drive(ctx context.Context, tasks []Task, state *progress, repor
 		defer close(indices)
 		for i := range tasks {
 			select {
-			case <-ctx.Done():
+			case <-fetchCtx.Done():
 				return
 			case indices <- i:
 			}
 		}
 	}()
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-	if err := ctx.Err(); err != nil {
-		return err
+	// Results are persisted in task order, so the resume record always
+	// describes a prefix of the list.
+	ready := map[int]result{}
+	next := 0
+	halted := false
+	var fatal error
+	for res := range results {
+		ready[res.index] = res
+		for !halted {
+			res, ok := ready[next]
+			if !ok {
+				break
+			}
+			delete(ready, next)
+			if res.err != nil && ctx.Err() != nil {
+				// Failed because the run was cancelled, not on its merits:
+				// leave it, and everything after it, for the resumed run.
+				halted = true
+				break
+			}
+			if err := r.record(persistCtx, tasks[next], res.fetched, res.err, state, report, now); err != nil {
+				fatal, halted = err, true
+				stop()
+				break
+			}
+			next++
+		}
 	}
+	if fatal != nil {
+		return fatal
+	}
+	return ctx.Err()
+}
 
-	for i, task := range tasks {
-		res := results[i]
-		outcome := "success"
-		if res.err != nil {
-			outcome = "error"
-			report.Failed++
-			report.Errors = append(report.Errors, fmt.Errorf("sync: %s: %w", task.ID, res.err))
-		} else if err := task.Persist(ctx, res.fetched); err != nil {
+// record persists one fetched task and its outcome, then saves the resume
+// record. It returns an error only for a failure of the bookkeeping itself;
+// a task's own failure is counted in the report.
+func (r *Runner) record(ctx context.Context, task Task, fetched any, fetchErr error, state *progress, report *RunReport, now time.Time) error {
+	outcome := "success"
+	switch {
+	case fetchErr != nil:
+		outcome = "error"
+		report.Failed++
+		report.Errors = append(report.Errors, fmt.Errorf("sync: %s: %w", task.ID, fetchErr))
+	default:
+		if err := task.Persist(ctx, fetched); err != nil {
 			outcome = "error"
 			report.Failed++
 			report.Errors = append(report.Errors, fmt.Errorf("sync: %s: persisting: %w", task.ID, err))
-		} else {
-			report.Succeeded++
-			if err := r.markSuccess(ctx, task, now); err != nil {
-				return err
-			}
+			break
 		}
-		state.Done[task.ID] = outcome
-		// Saved per task, not at the end: a record written only on
-		// completion is a record that never survives the crash it exists
-		// for.
-		if err := r.save(ctx, state); err != nil {
+		report.Succeeded++
+		if err := r.markSuccess(ctx, task, now); err != nil {
 			return err
 		}
 	}
-	return nil
+	state.Done[task.ID] = outcome
+	// Saved per task, not at the end: a record written only on completion is
+	// a record that never survives the crash it exists for.
+	return r.save(ctx, state)
 }
 
 // fetchSafe runs a task's fetch, converting a panic into an error.

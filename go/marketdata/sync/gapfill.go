@@ -103,16 +103,18 @@ func Backfill(ctx context.Context, p Params) (Report, error) {
 // backfillOne fills a single instrument, reporting how many bars were new.
 func backfillOne(ctx context.Context, p Params, key domain.InstrumentKey, now time.Time) (int, error) {
 	from := now.Add(-p.Lookback)
+	var lastHeld time.Time
 	if !p.Full {
 		last, ok, err := p.DB.LastCandleStart(ctx, key, p.Timeframe)
 		if err != nil {
 			return 0, err
 		}
 		if ok {
-			// Resume from the bar after the last one held. Starting at
-			// the last bar itself would re-request a bar that is already
-			// stored on every single run.
-			from = last.Add(time.Second)
+			// Resume from the last bar held, not the one after it. That
+			// bar may have been fetched while still forming, and starting
+			// after it would keep its partial close and volume forever.
+			from = last
+			lastHeld = last
 		}
 	}
 	if from.After(now) {
@@ -128,5 +130,18 @@ func backfillOne(ctx context.Context, p Params, key domain.InstrumentKey, now ti
 	if len(candles) == 0 {
 		return 0, nil
 	}
-	return p.DB.UpsertCandles(ctx, candles)
+	// The re-fetched copy of the last held bar replaces it; everything else
+	// is inserted only if new, so older history stays as first read.
+	var refresh, fresh []domain.Candle
+	for _, c := range candles {
+		if !lastHeld.IsZero() && c.Start.Equal(lastHeld) {
+			refresh = append(refresh, c)
+		} else {
+			fresh = append(fresh, c)
+		}
+	}
+	if _, err := p.DB.ReplaceCandles(ctx, refresh); err != nil {
+		return 0, err
+	}
+	return p.DB.UpsertCandles(ctx, fresh)
 }

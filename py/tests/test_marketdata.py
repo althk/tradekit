@@ -294,17 +294,20 @@ def test_backfill_on_an_empty_store_fetches_the_whole_lookback(db: Database) -> 
 
 
 def test_incremental_backfill_resumes_from_the_last_stored_bar(db: Database) -> None:
-    db.upsert_candles([_bar(dt.datetime(2025, 4, 17, tzinfo=IST), 10000)])
+    last = dt.datetime(2025, 4, 17, tzinfo=IST)
+    db.upsert_candles([_bar(last, 9000)])  # read while still forming
     history = _History()
     report = sync.backfill(
         sync.Params(
             db=db, history=history, keys=[RELIANCE], timeframe=Timeframe.D1, lookback=dt.timedelta(days=30), now=NOW
         )
     )
-    assert history.calls[0][1] == dt.datetime(2025, 4, 17, 0, 0, 1, tzinfo=IST), (
-        "the request must start one second after the last stored bar, or that bar is re-requested every run"
+    assert history.calls[0][1] == dt.datetime(2025, 4, 17, tzinfo=IST), (
+        "the request must start at the last stored bar, which may have been read while still forming"
     )
     assert report.inserted == 3, "18th, 19th and 20th"
+    refreshed = db.candles(RELIANCE, Timeframe.D1, last, last)
+    assert refreshed[0].close == _bar(last, 10000).close, "a partial bar must be replaced, not frozen"
 
 
 def test_full_backfill_re_pulls_and_inserts_nothing_new(db: Database) -> None:
@@ -462,8 +465,26 @@ def test_resume_skips_tasks_already_done(db: Database) -> None:
 
     report = sync.Runner(db=db, run_name="resume").run(tasks)
     assert report.run_id == run_id, "the resumed run keeps the interrupted run's id"
-    assert fetched == ["c"], "tasks recorded done are not refetched, whatever their outcome was"
-    assert report.skipped == 2 and report.succeeded == 1
+    assert fetched == ["b", "c"], "a success is not refetched; a task that failed before the crash is retried"
+    assert report.skipped == 1 and report.succeeded == 2
+
+
+def test_interrupted_run_keeps_the_tasks_that_finished(db: Database) -> None:
+    persisted: list[str] = []
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    tasks = [
+        _task("a", lambda: "a", persisted.append),
+        _task("b", lambda: "b", persisted.append),
+        _task("c", interrupted, persisted.append),
+        _task("d", lambda: "d", persisted.append),
+    ]
+    with pytest.raises(KeyboardInterrupt):
+        sync.Runner(db=db, run_name="interrupt", workers=1).run(tasks)
+    assert persisted == ["a", "b"], "fetches completed before the interrupt must not be thrown away"
+    assert db.get_state("sync.progress.interrupt")["done"] == {"a": "success", "b": "success"}
 
 
 def test_an_exception_in_one_fetch_does_not_tear_down_the_pool(db: Database) -> None:

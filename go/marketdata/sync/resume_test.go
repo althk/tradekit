@@ -286,3 +286,75 @@ func TestRunnerRequiresAStore(t *testing.T) {
 		t.Error("a runner with no store cannot record progress and must fail at once")
 	}
 }
+
+func TestCancelledRunKeepsTheTasksThatFinished(t *testing.T) {
+	db := openTest(t)
+	r := &Runner{DB: db, RunName: "cancel", Workers: 1}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var persisted []string
+	var tasks []Task
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("task-%02d", i)
+		tasks = append(tasks, Task{
+			ID: id, Cadence: Always,
+			Fetch: func(ctx context.Context) (any, error) {
+				if id == "task-02" {
+					// The operator hits Ctrl-C while the third fetch is in flight.
+					cancel()
+					return nil, ctx.Err()
+				}
+				return id, nil
+			},
+			Persist: func(_ context.Context, v any) error {
+				persisted = append(persisted, v.(string))
+				return nil
+			},
+		})
+	}
+
+	if _, err := r.Run(ctx, tasks); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if len(persisted) != 2 {
+		t.Fatalf("persisted %v, want the two tasks that finished before the cancel", persisted)
+	}
+	var state progress
+	if err := db.GetState(t.Context(), r.stateKey(), &state); err != nil {
+		t.Fatalf("the resume record must survive a cancel: %v", err)
+	}
+	if state.Done["task-01"] != "success" || state.Done["task-02"] != "" {
+		t.Errorf("resume record = %v, want tasks 00-01 done and the cancelled one left for the next run", state.Done)
+	}
+}
+
+func TestResumedRunRetriesTasksThatFailed(t *testing.T) {
+	db := openTest(t)
+	r := &Runner{DB: db, RunName: "retry"}
+	runID, err := db.StartRun(t.Context(), "sync", "retry", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetState(t.Context(), r.stateKey(), progress{
+		RunID: runID, Done: map[string]string{"a": "success", "b": "error"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var fetched []string
+	var tasks []Task
+	for _, id := range []string{"a", "b"} {
+		tasks = append(tasks, Task{
+			ID: id, Cadence: Always,
+			Fetch:   func(context.Context) (any, error) { fetched = append(fetched, id); return nil, nil },
+			Persist: func(context.Context, any) error { return nil },
+		})
+	}
+	report, err := r.Run(t.Context(), tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fetched) != 1 || fetched[0] != "b" || report.Succeeded != 1 {
+		t.Errorf("fetched %v (report %+v), want only the task that failed before the crash retried", fetched, report)
+	}
+}

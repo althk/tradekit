@@ -149,13 +149,14 @@ def backfill(p: Params) -> Report:
 def _backfill_one(p: Params, key: InstrumentKey, now: dt.datetime) -> int:
     """Fill a single instrument, returning how many bars were new."""
     start = now - p.lookback
+    last = None
     if not p.full:
         last = p.db.last_candle_start(key, p.timeframe)
         if last is not None:
-            # Resume from the bar after the last one held. Starting at the
-            # last bar itself would re-request a bar that is already stored
-            # on every single run.
-            start = last + _ONE_SECOND
+            # Resume from the last bar held, not the one after it. That bar
+            # may have been fetched while still forming, and starting after
+            # it would keep its partial close and volume forever.
+            start = last
     if start > now:
         # Already current. This is the normal state of an intraday sync run
         # twice in one minute, not a failure.
@@ -163,7 +164,10 @@ def _backfill_one(p: Params, key: InstrumentKey, now: dt.datetime) -> int:
     candles: list[Candle] = p.history.candles(key, p.timeframe, start, now)
     if not candles:
         return 0
-    return p.db.upsert_candles(candles)
+    # The re-fetched copy of the last held bar replaces it; everything else is
+    # inserted only if new, so older history stays as first read.
+    p.db.replace_candles([c for c in candles if last is not None and c.start == last])
+    return p.db.upsert_candles([c for c in candles if last is None or c.start != last])
 
 
 # ------------------------------------------------------------------ cadence
@@ -299,8 +303,10 @@ class Runner:
 
         pending: list[Task] = []
         for task in tasks:
-            if task.id in state.done:
-                # Handled earlier in the run this one is resuming.
+            if state.done.get(task.id, "error") != "error":
+                # Handled earlier in the run this one is resuming. A task that
+                # failed there is attempted again: skipping it would let the
+                # resumed pass finish "ok" with that failure forgotten.
                 report.skipped += 1
                 continue
             if not self._due(task, now):
@@ -326,38 +332,49 @@ class Runner:
     def _drive(self, tasks: list[Task], state: _Progress, report: RunReport, now: dt.datetime) -> None:
         """Fetch concurrently and persist serially.
 
-        Results are collected by index, so the persist order matches the task
-        order however the pool completes. A resumed run then stops at a prefix
-        rather than at a scatter of finished tasks, which is what makes the
-        resume record small and its meaning obvious.
+        Results are persisted in task order, each as soon as every task before
+        it has finished, rather than after the whole pool completes. A run
+        killed partway through then keeps everything up to the first unfinished
+        task, and the resume record always describes a prefix of the list.
         """
         if not tasks:
             return
         workers = max(1, min(self.workers, len(tasks)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_fetch_safe, tasks))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            # map yields in task order, lazily: iterating it rather than
+            # collecting it into a list is what makes persistence incremental.
+            for task, (fetched, err) in zip(tasks, pool.map(_fetch_safe, tasks), strict=True):
+                self._record(task, fetched, err, state, report, now)
+        finally:
+            # An interrupt must not wait for hundreds of queued fetches whose
+            # results nothing will persist.
+            pool.shutdown(wait=True, cancel_futures=True)
 
-        for task, (fetched, err) in zip(tasks, results, strict=True):
-            outcome = "success"
-            if err is not None:
+    def _record(
+        self, task: Task, fetched: Any, err: Exception | None, state: _Progress, report: RunReport, now: dt.datetime
+    ) -> None:
+        """Persist one fetched task and its outcome, then save the resume record."""
+        outcome = "success"
+        if err is not None:
+            outcome = "error"
+            report.failed += 1
+            report.errors.append(RuntimeError(f"sync: {task.id}: {err}"))
+        else:
+            try:
+                task.persist(fetched)
+            except Exception as exc:  # one task's failure must not end the pass
                 outcome = "error"
                 report.failed += 1
-                report.errors.append(RuntimeError(f"sync: {task.id}: {err}"))
+                report.errors.append(RuntimeError(f"sync: {task.id}: persisting: {exc}"))
             else:
-                try:
-                    task.persist(fetched)
-                except Exception as exc:  # one task's failure must not end the pass
-                    outcome = "error"
-                    report.failed += 1
-                    report.errors.append(RuntimeError(f"sync: {task.id}: persisting: {exc}"))
-                else:
-                    report.succeeded += 1
-                    self._mark_success(task, now)
-            state.done[task.id] = outcome
-            # Saved per task, not at the end: a record written only on
-            # completion is a record that never survives the crash it exists
-            # for.
-            self._save(state)
+                report.succeeded += 1
+                self._mark_success(task, now)
+        state.done[task.id] = outcome
+        # Saved per task, not at the end: a record written only on
+        # completion is a record that never survives the crash it exists
+        # for.
+        self._save(state)
 
     def _due(self, task: Task, now: dt.datetime) -> bool:
         """Whether a task's cadence gate lets it through."""
