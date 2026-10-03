@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/althk/tradekit/go/core/domain"
 )
@@ -40,5 +41,23 @@ func TestInstrumentTokenReadsTheCacheWithoutAnotherDownload(t *testing.T) {
 	_, err = c.instrumentToken(context.Background(), domain.InstrumentKey{Exchange: "NSE", Symbol: "NOPE"})
 	if err == nil || !strings.Contains(err.Error(), "no instrument token known") {
 		t.Errorf("an unknown symbol on a cached exchange must say so without refetching, got %v", err)
+	}
+}
+
+func TestNextResetIsTheFollowingSixAMIST(t *testing.T) {
+	ist := istLocation()
+	cases := []struct{ issued, want time.Time }{
+		// Issued before the reset: dies at 06:00 the same morning, so a
+		// 05:30 login is stale by the open.
+		{time.Date(2026, 1, 15, 5, 30, 0, 0, ist), time.Date(2026, 1, 15, 6, 0, 0, 0, ist)},
+		{time.Date(2026, 1, 15, 8, 45, 0, 0, ist), time.Date(2026, 1, 16, 6, 0, 0, 0, ist)},
+		{time.Date(2026, 1, 15, 6, 0, 0, 0, ist), time.Date(2026, 1, 16, 6, 0, 0, 0, ist)},
+		// A UTC stamp is judged by its IST wall clock: 00:15 UTC is 05:45 IST.
+		{time.Date(2026, 1, 15, 0, 15, 0, 0, time.UTC), time.Date(2026, 1, 15, 6, 0, 0, 0, ist)},
+	}
+	for _, tc := range cases {
+		if got := nextReset(tc.issued, tokenResetMinute); !got.Equal(tc.want) {
+			t.Errorf("nextReset(%s) = %s, want %s", tc.issued, got, tc.want)
+		}
 	}
 }

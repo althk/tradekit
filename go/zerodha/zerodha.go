@@ -210,14 +210,14 @@ func (c *Client) SetAccessToken(token string, issuedAt time.Time) {
 	c.kite.SetAccessToken(token)
 }
 
-// TokenFresh reports whether the access token is valid for the current trading
-// day.
+// TokenFresh reports whether the access token is still valid.
 //
-// Kite's tokens expire overnight, so a scheduler asks this before the open and
-// re-authenticates rather than discovering the problem on its first order.
-// The comparison is by IST calendar date, which is the granularity the
-// expiry actually has; a token of unknown age is reported stale, because
-// assuming it is good is the failure this exists to prevent.
+// Kite's tokens expire at a fixed 06:00 IST reset, so a scheduler asks this
+// before the open and re-authenticates rather than discovering the problem on
+// its first order. Comparing calendar dates instead would call a token issued
+// at 05:30 fresh all day, though it dies half an hour later. A token of unknown
+// age is reported stale, because assuming it is good is the failure this
+// exists to prevent.
 func (c *Client) TokenFresh(context.Context) bool {
 	c.mu.RLock()
 	issued := c.tokenIssuedAt
@@ -226,14 +226,33 @@ func (c *Client) TokenFresh(context.Context) bool {
 	if issued.IsZero() {
 		return false
 	}
-	loc, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		return false
-	}
-	now := time.Now().In(loc)
-	at := issued.In(loc)
-	return now.Year() == at.Year() && now.Month() == at.Month() && now.Day() == at.Day()
+	return time.Now().Before(nextReset(issued, tokenResetMinute))
 }
+
+// tokenResetMinute is the IST minute of day at which Kite invalidates every
+// access token.
+const tokenResetMinute = 6 * 60
+
+// nextReset returns the first daily reset, at minute of day resetMinute IST,
+// strictly after issued.
+func nextReset(issued time.Time, resetMinute int) time.Time {
+	at := issued.In(istLocation())
+	reset := time.Date(at.Year(), at.Month(), at.Day(), resetMinute/60, resetMinute%60, 0, 0, at.Location())
+	if !reset.After(at) {
+		reset = reset.AddDate(0, 0, 1)
+	}
+	return reset
+}
+
+// istLocation returns India Standard Time, falling back to a fixed +05:30
+// zone on a host without tzdata. India has no daylight saving, so the fixed
+// zone is exact rather than an approximation.
+var istLocation = sync.OnceValue(func() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Kolkata"); err == nil {
+		return loc
+	}
+	return time.FixedZone("IST", 5*3600+1800)
+})
 
 // call paces a general request and runs it.
 //
@@ -245,6 +264,13 @@ func (c *Client) call(ctx context.Context, fn func() error) error {
 		return err
 	}
 	return classify(fn())
+}
+
+// mutate is call for a request that changes state at Kite. A failure that does
+// not say whether Kite acted is reported as ErrUnknownOutcome, never as
+// transient, so no caller retries its way into a duplicate order.
+func (c *Client) mutate(ctx context.Context, fn func() error) error {
+	return ambiguous(c.call(ctx, fn))
 }
 
 // instrumentToken resolves the numeric token the historical endpoint and the

@@ -28,7 +28,7 @@ func (c *Client) PlaceProtective(ctx context.Context, p domain.Protective) (stri
 	}
 
 	var resp kiteconnect.GTTResponse
-	err = c.call(ctx, func() error {
+	err = c.mutate(ctx, func() error {
 		var err error
 		resp, err = c.kite.PlaceGTT(params)
 		return err
@@ -117,6 +117,15 @@ func buildGTTParams(p domain.Protective, last money.Money) (kiteconnect.GTTParam
 	return params, nil
 }
 
+// stopLimitOf returns a stop leg's limit price as a Protective records it: zero
+// when the limit is at the trigger (or unknown), the limit itself otherwise.
+func stopLimitOf(stop, limit money.Money) money.Money {
+	if limit <= 0 || limit == stop {
+		return 0
+	}
+	return limit
+}
+
 // lastPrice fetches one instrument's last traded price.
 func (c *Client) lastPrice(ctx context.Context, key domain.InstrumentKey) (money.Money, error) {
 	prices, err := c.LTP(ctx, []domain.InstrumentKey{key})
@@ -156,13 +165,19 @@ func (c *Client) ModifyStop(ctx context.Context, id string, stop money.Money) er
 	if err != nil {
 		return err
 	}
+	// The stop leg's limit buffer moves with the stop. Rebuilding without
+	// it would put a long's sell limit exactly at the trigger, which a fast
+	// move gaps straight through.
+	if current.StopLimit > 0 && current.Stop > 0 {
+		current.StopLimit = stop + (current.StopLimit - current.Stop)
+	}
 	current.Stop = stop
 
 	params, err := c.gttParams(ctx, current)
 	if err != nil {
 		return err
 	}
-	err = c.call(ctx, func() error {
+	err = c.mutate(ctx, func() error {
 		_, err := c.kite.ModifyGTT(triggerID, params)
 		return err
 	})
@@ -178,7 +193,7 @@ func (c *Client) CancelProtective(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("zerodha: %q is not a Kite trigger id: %w", id, err)
 	}
-	err = c.call(ctx, func() error {
+	err = c.mutate(ctx, func() error {
 		_, err := c.kite.DeleteGTT(triggerID)
 		return err
 	})
@@ -236,22 +251,48 @@ func (c *Client) fromGTT(g kiteconnect.GTT) (domain.Protective, error) {
 		Product:  fromProduct(first.Product),
 	}
 
+	// limitAt is the limit price of the order leg i fires, which is where a
+	// stop's buffer below (or above) its trigger is recorded.
+	limitAt := func(i int) money.Money {
+		if i < len(g.Orders) {
+			return paise(g.Orders[i].Price)
+		}
+		return 0
+	}
+
 	switch len(g.Condition.TriggerValues) {
 	case 1:
-		p.Stop = paise(g.Condition.TriggerValues[0])
+		// A single leg is a stop or a target depending on which side of
+		// the market it was placed: a protective sell below the price is a
+		// stop, above it a target. Reading every single leg as a stop would
+		// report a target-only GTT as stop protection.
+		level := paise(g.Condition.TriggerValues[0])
+		last := paise(g.Condition.LastPrice)
+		target := last > 0 && ((p.Side == domain.Sell && level > last) || (p.Side == domain.Buy && level < last))
+		if target {
+			p.Target = level
+		} else {
+			p.Stop = level
+			p.StopLimit = stopLimitOf(level, limitAt(0))
+		}
 	case 2:
-		// Kite lists the values in price order, so which is the stop and
-		// which the target depends on the side of the protective order:
-		// a sell that protects a long stops below and targets above.
+		// Kite lists the values, and the orders with them, in price order,
+		// so which is the stop and which the target depends on the side of
+		// the protective order: a sell that protects a long stops below and
+		// targets above.
 		lower := paise(g.Condition.TriggerValues[0])
 		upper := paise(g.Condition.TriggerValues[1])
+		lowerLimit, upperLimit := limitAt(0), limitAt(1)
 		if lower > upper {
 			lower, upper = upper, lower
+			lowerLimit, upperLimit = upperLimit, lowerLimit
 		}
 		if p.Side == domain.Sell {
 			p.Stop, p.Target = lower, upper
+			p.StopLimit = stopLimitOf(lower, lowerLimit)
 		} else {
 			p.Stop, p.Target = upper, lower
+			p.StopLimit = stopLimitOf(upper, upperLimit)
 		}
 	default:
 		return domain.Protective{}, fmt.Errorf("zerodha: GTT %d has %d trigger values, expected 1 or 2",

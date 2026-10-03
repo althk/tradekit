@@ -20,30 +20,47 @@ func (c *Client) LTP(ctx context.Context, keys []domain.InstrumentKey) (map[doma
 	if len(keys) == 0 {
 		return map[domain.InstrumentKey]money.Money{}, nil
 	}
-	symbols := make([]string, len(keys))
-	for i, k := range keys {
-		symbols[i] = quoteKey(k)
-	}
-
-	var quotes kiteconnect.QuoteLTP
-	err := c.call(ctx, func() error {
-		var err error
-		quotes, err = c.kite.GetLTP(symbols...)
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("zerodha: fetching last prices for %d instruments: %w", len(keys), err)
-	}
-
-	out := make(map[domain.InstrumentKey]money.Money, len(quotes))
-	for raw, q := range quotes {
-		key, err := parseQuoteKey(raw)
+	out := make(map[domain.InstrumentKey]money.Money, len(keys))
+	for _, batch := range quoteBatches(keys) {
+		var quotes kiteconnect.QuoteLTP
+		err := c.call(ctx, func() error {
+			var err error
+			quotes, err = c.kite.GetLTP(batch...)
+			return err
+		})
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("zerodha: fetching last prices for %d instruments: %w", len(keys), err)
 		}
-		out[key] = paise(q.LastPrice)
+		for raw, q := range quotes {
+			key, err := parseQuoteKey(raw)
+			if err != nil {
+				continue
+			}
+			out[key] = paise(q.LastPrice)
+		}
 	}
 	return out, nil
+}
+
+// maxQuoteBatch is how many instruments one quote call carries. Kite caps the
+// LTP and OHLC endpoints at 1000 instruments a request and refuses the whole
+// call beyond that, so a scan of the full NSE list would fail outright rather
+// than return what it could. 500 stays clear of the cap.
+const maxQuoteBatch = 500
+
+// quoteBatches renders keys in Kite's "EXCHANGE:SYMBOL" form, split into
+// batches no larger than maxQuoteBatch.
+func quoteBatches(keys []domain.InstrumentKey) [][]string {
+	var out [][]string
+	for start := 0; start < len(keys); start += maxQuoteBatch {
+		end := min(start+maxQuoteBatch, len(keys))
+		batch := make([]string, 0, end-start)
+		for _, k := range keys[start:end] {
+			batch = append(batch, quoteKey(k))
+		}
+		out = append(out, batch)
+	}
+	return out
 }
 
 // Quote returns the still-forming session's OHLC and last price.
@@ -51,19 +68,20 @@ func (c *Client) Quote(ctx context.Context, keys []domain.InstrumentKey) (map[do
 	if len(keys) == 0 {
 		return map[domain.InstrumentKey]domain.Quote{}, nil
 	}
-	symbols := make([]string, len(keys))
-	for i, k := range keys {
-		symbols[i] = quoteKey(k)
-	}
-
-	var quotes kiteconnect.QuoteOHLC
-	err := c.call(ctx, func() error {
-		var err error
-		quotes, err = c.kite.GetOHLC(symbols...)
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("zerodha: fetching quotes for %d instruments: %w", len(keys), err)
+	quotes := kiteconnect.QuoteOHLC{}
+	for _, batch := range quoteBatches(keys) {
+		var part kiteconnect.QuoteOHLC
+		err := c.call(ctx, func() error {
+			var err error
+			part, err = c.kite.GetOHLC(batch...)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("zerodha: fetching quotes for %d instruments: %w", len(keys), err)
+		}
+		for raw, q := range part {
+			quotes[raw] = q
+		}
 	}
 
 	now := time.Now()
@@ -124,7 +142,10 @@ func (c *Client) Candles(ctx context.Context, key domain.InstrumentKey, tf domai
 		if err := c.historical.Wait(ctx); err != nil {
 			return nil, err
 		}
-		chunk, err = c.kite.GetHistoricalData(token, interval, start, end, false, false)
+		// The SDK formats the bounds in each time's own zone and Kite reads
+		// them as IST, so a UTC bound would shift the window by 5h30m and
+		// lose the session's latest bars.
+		chunk, err = c.kite.GetHistoricalData(token, interval, start.In(istLocation()), end.In(istLocation()), false, false)
 		if err != nil {
 			err = classify(err)
 			return nil, fmt.Errorf("zerodha: fetching %s %s candles for %s from %s to %s: %w",

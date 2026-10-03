@@ -27,6 +27,10 @@ var (
 	// ErrRejected means Kite refused the request on its merits. Repeating it
 	// unchanged will be refused again.
 	ErrRejected = errors.New("zerodha: rejected")
+	// ErrUnknownOutcome means a call that changes state failed without saying
+	// whether Kite acted on it. Reconcile before repeating it; see
+	// ports.ErrUnknownOutcome.
+	ErrUnknownOutcome = fmt.Errorf("zerodha: %w", ports.ErrUnknownOutcome)
 )
 
 // classify wraps a Kite error with one of the sentinels above so callers can
@@ -73,6 +77,24 @@ func sentinelFor(err kiteconnect.Error) error {
 		// same bad order sent repeatedly.
 		return ErrRejected
 	}
+}
+
+// ambiguous reclassifies a transient failure of a call that changes state.
+//
+// Kite reports a client timeout as NetworkError and an undecodable success as
+// DataError; both, like its GeneralError and a 5xx, can arrive after the order
+// reached the OMS. Only a rate limit is known to have been refused before any
+// processing, so it alone stays transient.
+func ambiguous(err error) error {
+	var c *classified
+	if !errors.As(err, &c) || !errors.Is(c.sentinel, ErrTransient) {
+		return err
+	}
+	var kerr kiteconnect.Error
+	if errors.As(c.err, &kerr) && kerr.Code == http.StatusTooManyRequests {
+		return err
+	}
+	return &classified{sentinel: ErrUnknownOutcome, err: c.err}
 }
 
 // classified carries both the sentinel and the SDK's own error, so errors.Is

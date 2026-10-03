@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/althk/tradekit/go/core/ports"
+
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
 
@@ -110,5 +112,26 @@ func TestClassifiedErrorReportsKitesMessage(t *testing.T) {
 	original := kiteconnect.Error{Code: http.StatusBadRequest, ErrorType: kiteconnect.OrderError, Message: "Insufficient funds"}
 	if got, want := classify(original).Error(), original.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestAmbiguousWriteFailureIsAnUnknownOutcome(t *testing.T) {
+	for _, kerr := range []kiteconnect.Error{
+		{Code: 0, ErrorType: kiteconnect.NetworkError, Message: "client timeout"},
+		{Code: http.StatusOK, ErrorType: kiteconnect.DataError, Message: "undecodable"},
+		{Code: http.StatusBadGateway, ErrorType: kiteconnect.GeneralError, Message: "oms down"},
+	} {
+		err := ambiguous(classify(kerr))
+		if !errors.Is(err, ErrUnknownOutcome) || !errors.Is(err, ports.ErrUnknownOutcome) || errors.Is(err, ErrTransient) {
+			t.Errorf("%s: err = %v, want ErrUnknownOutcome and not ErrTransient: the order may be live", kerr.ErrorType, err)
+		}
+	}
+	limited := ambiguous(classify(kiteconnect.Error{Code: http.StatusTooManyRequests, ErrorType: kiteconnect.InputError}))
+	if !errors.Is(limited, ErrTransient) {
+		t.Errorf("a rate limit is refused before processing and stays transient, got %v", limited)
+	}
+	rejected := ambiguous(classify(kiteconnect.Error{Code: http.StatusBadRequest, ErrorType: kiteconnect.OrderError}))
+	if !errors.Is(rejected, ErrRejected) {
+		t.Errorf("a rejection stays a rejection, got %v", rejected)
 	}
 }

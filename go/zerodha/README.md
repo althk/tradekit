@@ -66,8 +66,11 @@ live with it in `core/ratelimit`.
   the exchange accepts; call `OrderStatus` for what actually happened.
 - **An unknown order status maps to `pending`, never to a terminal state**, so a
   reconciler keeps watching an order it does not recognise.
-- **Errors carry one of three sentinels.** `errors.Is(err, ErrTokenExpired)`
-  means re-authenticate, `ErrTransient` means retry, `ErrRejected` means stop.
+- **Errors carry one of four sentinels.** `errors.Is(err, ErrTokenExpired)`
+  means re-authenticate, `ErrTransient` means retry, `ErrRejected` means stop,
+  and `ErrUnknownOutcome` (also `ports.ErrUnknownOutcome`) means a place, cancel
+  or GTT call failed without saying whether Kite acted: reconcile against the
+  order book or GTT list before repeating it, or risk a duplicate order.
   HTTP 429 is transient whatever `ErrorType` Kite attaches, and an error type
   the SDK adds later is treated as a rejection — one missed retry costs a call,
   a retried rejection sends the same bad order repeatedly. Kite's own error is

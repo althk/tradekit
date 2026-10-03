@@ -48,7 +48,7 @@ func (c *Client) PlaceOrder(ctx context.Context, req domain.OrderRequest) (domai
 	}
 
 	var resp kiteconnect.OrderResponse
-	err = c.call(ctx, func() error {
+	err = c.mutate(ctx, func() error {
 		var err error
 		resp, err = c.kite.PlaceOrder(varietyRegular, params)
 		return err
@@ -126,7 +126,7 @@ func (c *Client) orderParams(req domain.OrderRequest) (kiteconnect.OrderParams, 
 
 // CancelOrder withdraws an open order.
 func (c *Client) CancelOrder(ctx context.Context, id string) error {
-	err := c.call(ctx, func() error {
+	err := c.mutate(ctx, func() error {
 		_, err := c.kite.CancelOrder(varietyRegular, id, nil)
 		return err
 	})
@@ -276,8 +276,11 @@ func (c *Client) Holdings(ctx context.Context) ([]Holding, error) {
 
 	out := make([]Holding, 0, len(holdings))
 	for _, h := range holdings {
-		qty := h.Quantity + h.T1Quantity
-		if qty == 0 {
+		// Shares sold today are still in Quantity until settlement; Kite
+		// reports them in UsedQuantity. Counting them would tell an
+		// "already holding" guard the position is still there all day.
+		qty := h.Quantity + h.T1Quantity - h.UsedQuantity
+		if qty <= 0 {
 			continue
 		}
 		out = append(out, Holding{
