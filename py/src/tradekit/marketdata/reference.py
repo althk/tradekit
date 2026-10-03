@@ -310,11 +310,18 @@ def upsert_actions(db: Database, items: list[Action]) -> None:
     ``REPLACE`` rather than ``IGNORE``, unlike candles: a corrected ratio must
     take effect, and unlike a bar an action has no history worth preserving --
     there is one right answer for a split that has already happened.
+
+    Dividends in the batch that share an instrument and ex-date are summed into
+    one row first. A final and a special dividend going ex on the same day are
+    both real, and the table holds one row per (instrument, ex-date, kind), so
+    writing them separately would keep only the last and under-adjust the
+    series.
     """
     if not items:
         return
     for a in items:
         _validate(a)
+    items = _merge_dividends(items)
     with db.tx() as conn:
         conn.executemany(
             """
@@ -323,6 +330,24 @@ def upsert_actions(db: Database, items: list[Action]) -> None:
             """,
             [(a.key.exchange, a.key.symbol, a.ex_date.isoformat(), a.kind, a.ratio, int(a.amount)) for a in items],
         )
+
+
+def _merge_dividends(items: list[Action]) -> list[Action]:
+    """Sum dividends sharing an instrument and ex-date, keeping the first one's position."""
+    out: list[Action] = []
+    at: dict[tuple[InstrumentKey, dt.date], int] = {}
+    for a in items:
+        if a.kind != KIND_DIVIDEND:
+            out.append(a)
+            continue
+        k = (a.key, a.ex_date)
+        if k in at:
+            first = out[at[k]]
+            out[at[k]] = replace(first, amount=Money(first.amount + a.amount))
+            continue
+        at[k] = len(out)
+        out.append(a)
+    return out
 
 
 def _validate(a: Action) -> None:

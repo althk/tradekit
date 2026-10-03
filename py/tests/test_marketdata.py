@@ -948,3 +948,17 @@ def test_resample_daily_to_weekly() -> None:
     assert len(out) == 2, "weekly resampling produced daily bars"
     assert out[0].volume == 5 and out[0].close == 154
     assert out[1].start == monday + dt.timedelta(days=7)
+
+
+def test_same_day_dividends_are_summed_not_overwritten(db: Database) -> None:
+    db.upsert_instruments([Instrument(key=RELIANCE)])
+    ex = dt.date(2025, 8, 1)
+    reference.upsert_actions(
+        db,
+        [
+            reference.Action(RELIANCE, ex, reference.KIND_DIVIDEND, amount=money.parse("5.00")),
+            reference.Action(RELIANCE, ex, reference.KIND_DIVIDEND, amount=money.parse("3.00")),
+        ],
+    )
+    got = reference.actions(db, RELIANCE, ex, ex)
+    assert [a.amount for a in got] == [money.parse("8.00")], "a final and a special on one ex-date are both paid"

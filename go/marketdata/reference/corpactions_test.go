@@ -195,3 +195,18 @@ func TestValidateRejectsActionsThatWouldCorruptASeries(t *testing.T) {
 		t.Errorf("a well-formed split must be accepted: %v", err)
 	}
 }
+
+func TestSameDayDividendsAreSummedNotOverwritten(t *testing.T) {
+	ex := day(2025, 8, 1)
+	got := mergeDividends([]Action{
+		{Key: reliance, ExDate: ex, Kind: KindDividend, Ratio: 1, Amount: money.MustParse("5.00")},
+		{Key: reliance, ExDate: ex, Kind: KindSplit, Ratio: 2},
+		{Key: reliance, ExDate: ex, Kind: KindDividend, Ratio: 1, Amount: money.MustParse("3.00")},
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d actions, want the summed dividend and the split", len(got))
+	}
+	if got[0].Kind != KindDividend || got[0].Amount != money.MustParse("8.00") {
+		t.Errorf("dividend = %+v, want 8.00: a final and a special on one ex-date are both paid", got[0])
+	}
+}

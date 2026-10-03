@@ -89,10 +89,21 @@ func Actions(ctx context.Context, db *store.DB, key domain.InstrumentKey, from, 
 // REPLACE rather than IGNORE, unlike candles: a corrected ratio must take
 // effect, and unlike a bar an action has no history worth preserving — there is
 // one right answer for a split that has already happened.
+//
+// Dividends in the batch that share an instrument and ex-date are summed into
+// one row first. A final and a special dividend going ex on the same day are
+// both real, and the table holds one row per (instrument, ex-date, kind), so
+// writing them separately would keep only the last and under-adjust the series.
 func UpsertActions(ctx context.Context, db *store.DB, actions []Action) error {
 	if len(actions) == 0 {
 		return nil
 	}
+	for _, a := range actions {
+		if err := validate(a); err != nil {
+			return err
+		}
+	}
+	actions = mergeDividends(actions)
 	tx, err := db.SQL().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("reference: beginning corporate-action write: %w", err)
@@ -109,9 +120,6 @@ func UpsertActions(ctx context.Context, db *store.DB, actions []Action) error {
 	defer func() { _ = stmt.Close() }()
 
 	for _, a := range actions {
-		if err := validate(a); err != nil {
-			return err
-		}
 		if _, err := stmt.ExecContext(ctx,
 			a.Key.Exchange, a.Key.Symbol, a.ExDate.Format(time.DateOnly),
 			a.Kind, a.Ratio, int64(a.Amount)); err != nil {
@@ -119,6 +127,31 @@ func UpsertActions(ctx context.Context, db *store.DB, actions []Action) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// mergeDividends sums dividends that share an instrument and ex-date, keeping
+// the first one's position in the batch. Other kinds pass through unchanged.
+func mergeDividends(actions []Action) []Action {
+	type key struct {
+		inst domain.InstrumentKey
+		day  string
+	}
+	at := map[key]int{}
+	out := make([]Action, 0, len(actions))
+	for _, a := range actions {
+		if a.Kind != KindDividend {
+			out = append(out, a)
+			continue
+		}
+		k := key{a.Key, a.ExDate.Format(time.DateOnly)}
+		if i, seen := at[k]; seen {
+			out[i].Amount += a.Amount
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, a)
+	}
+	return out
 }
 
 // validate rejects an action that would silently corrupt a series.
