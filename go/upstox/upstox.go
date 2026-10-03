@@ -31,6 +31,8 @@ package upstox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -169,8 +171,11 @@ type Client struct {
 	// waiting for it.
 	sleep func(context.Context, time.Duration) error
 
-	// mu guards the token pair.
-	mu            sync.RWMutex
+	// mu guards the token pair and the login state.
+	mu sync.RWMutex
+	// loginState is the state sent with the last LoginURL, which the
+	// callback must echo; empty when no login is in progress.
+	loginState    string
 	accessToken   string
 	tokenIssuedAt time.Time
 }
@@ -226,11 +231,27 @@ func orDefault(v, fallback string) string {
 
 // LoginURL returns the URL a user visits to authorise the app and obtain an
 // authorisation code, which Upstox delivers to RedirectURI as ?code=.
+//
+// Each call starts a new login attempt: a random state goes on the URL, Upstox
+// echoes it on the redirect, and LoginCallback refuses a redirect that does
+// not carry it. Without the check, anyone who can reach the callback port can
+// hand the process a code for their own account.
 func (c *Client) LoginURL() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failing is a broken platform, not a condition to handle.
+		panic("upstox: crypto/rand: " + err.Error())
+	}
+	state := hex.EncodeToString(b[:])
+	c.mu.Lock()
+	c.loginState = state
+	c.mu.Unlock()
+
 	q := url.Values{}
 	q.Set("client_id", c.opts.APIKey)
 	q.Set("redirect_uri", c.opts.RedirectURI)
 	q.Set("response_type", "code")
+	q.Set("state", state)
 	return c.baseURL + "/login/authorization/dialog?" + q.Encode()
 }
 
@@ -285,6 +306,15 @@ func (c *Client) Login(ctx context.Context, authCode string) (string, error) {
 // document a stable error parameter, so whatever it did send is quoted
 // rather than guessed at.
 func (c *Client) LoginCallback(ctx context.Context, query url.Values) (string, error) {
+	c.mu.RLock()
+	want := c.loginState
+	c.mu.RUnlock()
+	if want == "" {
+		return "", fmt.Errorf("upstox: no login in progress; call LoginURL first")
+	}
+	if got := query.Get("state"); got != want {
+		return "", fmt.Errorf("upstox: login callback state %q does not match the one sent", got)
+	}
 	code := query.Get("code")
 	if code == "" {
 		return "", fmt.Errorf("upstox: login refused (%s)", refusal(query))
@@ -315,14 +345,14 @@ func (c *Client) token() string {
 	return c.accessToken
 }
 
-// TokenFresh reports whether the access token is valid for the current trading
-// day.
+// TokenFresh reports whether the access token is still valid.
 //
-// Upstox's tokens expire overnight, so a scheduler asks this before the open
-// and re-authenticates rather than discovering the problem on its first order.
-// The comparison is by IST calendar date, which is the granularity the expiry
-// actually has; a token of unknown age is reported stale, because assuming it
-// is good is the failure this exists to prevent.
+// Upstox invalidates every token at a fixed reset around 03:30 IST, so a
+// scheduler asks this before the open and re-authenticates rather than
+// discovering the problem on its first order. Comparing calendar dates instead
+// would call a token issued at 02:00 fresh all day, though it dies before
+// dawn. A token of unknown age is reported stale, because assuming it is good
+// is the failure this exists to prevent.
 func (c *Client) TokenFresh(context.Context) bool {
 	c.mu.RLock()
 	issued := c.tokenIssuedAt
@@ -332,13 +362,22 @@ func (c *Client) TokenFresh(context.Context) bool {
 	if token == "" || issued.IsZero() {
 		return false
 	}
-	loc, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		return false
+	return time.Now().Before(nextReset(issued, tokenResetMinute))
+}
+
+// tokenResetMinute is the IST minute of day at which Upstox invalidates every
+// access token.
+const tokenResetMinute = 3*60 + 30
+
+// nextReset returns the first daily reset, at minute of day resetMinute IST,
+// strictly after issued.
+func nextReset(issued time.Time, resetMinute int) time.Time {
+	at := issued.In(istLocation())
+	reset := time.Date(at.Year(), at.Month(), at.Day(), resetMinute/60, resetMinute%60, 0, 0, at.Location())
+	if !reset.After(at) {
+		reset = reset.AddDate(0, 0, 1)
 	}
-	now := time.Now().In(loc)
-	at := issued.In(loc)
-	return now.Year() == at.Year() && now.Month() == at.Month() && now.Day() == at.Day()
+	return reset
 }
 
 // instrumentKeyFor resolves the "SEGMENT|ID" key every endpoint addresses an

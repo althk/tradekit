@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/althk/tradekit/go/core/domain"
@@ -237,12 +238,19 @@ func (c *Client) Candles(ctx context.Context, key domain.InstrumentKey, tf domai
 			to.Format(time.DateOnly), from.Format(time.DateOnly))
 	}
 
-	span := time.Duration(chunkDays(unit, interval)) * 24 * time.Hour
+	// Upstox takes whole IST dates, both ends inclusive, so the chunks are
+	// built from dates: each starts the day after the previous one ended.
+	// Chunking on instants instead fetches the boundary day twice whenever
+	// from is not midnight, and every chunk seam then holds duplicate bars.
+	ist := istLocation()
+	first := dateOf(from.In(ist))
+	last := dateOf(to.In(ist))
+	span := chunkDays(unit, interval)
 	var out []domain.Candle
-	for start := from; !start.After(to); start = start.Add(span) {
-		end := start.Add(span - time.Second)
-		if end.After(to) {
-			end = to
+	for start := first; !start.After(last); {
+		end := start.AddDate(0, 0, span-1)
+		if end.After(last) {
+			end = last
 		}
 		// The path takes the LATER date first. Both Go and Python donors
 		// order it this way; reversing it returns an empty series rather
@@ -257,9 +265,35 @@ func (c *Client) Candles(ctx context.Context, key domain.InstrumentKey, tf domai
 				tf, key, start.Format(time.DateOnly), end.Format(time.DateOnly), err)
 		}
 		out = append(out, chunk...)
+		start = end.AddDate(0, 0, 1)
 	}
-	return out, nil
+	if !tf.Intraday() {
+		return out, nil
+	}
+	// The dates bound the request; the caller's instants bound the answer.
+	kept := out[:0]
+	for _, bar := range out {
+		if !bar.Start.Before(from) && !bar.Start.After(to) {
+			kept = append(kept, bar)
+		}
+	}
+	return kept, nil
 }
+
+// dateOf returns midnight of t's calendar date in t's own location.
+func dateOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// istLocation returns India Standard Time, falling back to a fixed +05:30
+// zone on a host without tzdata. India has no daylight saving, so the fixed
+// zone is exact rather than an approximation.
+var istLocation = sync.OnceValue(func() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Kolkata"); err == nil {
+		return loc
+	}
+	return time.FixedZone("IST", 5*3600+1800)
+})
 
 // IntradayCandles returns today's bars so far.
 //

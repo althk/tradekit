@@ -87,6 +87,14 @@ class RateLimitedError(TransientError):
     """Upstox saying "ask again later", by status or by error code."""
 
 
+class UnknownOutcomeError(APIError, ports.UnknownOutcomeError):
+    """A state-changing call failed without saying whether Upstox acted.
+
+    Not retryable: reconcile against the order book before repeating it, or
+    risk a duplicate order.
+    """
+
+
 class RejectedError(APIError):
     """Upstox refused the request on its merits.
 
@@ -253,8 +261,11 @@ class Transport:
             try:
                 response = self._client.request(method, url, params=params, json=json_body, headers=self._headers())
             except httpx.HTTPError as exc:
-                # A transport failure has no status to classify, and repeating
-                # it is legitimate: the connection, not the request, failed.
+                # A transport failure has no status to classify. Repeating a
+                # read is legitimate: the connection, not the request, failed.
+                # A write that may have been sent is another matter.
+                if not retry and not isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout):
+                    raise UnknownOutcomeError(0, "", str(exc)) from exc
                 last = TransientError(0, "", str(exc))
                 if attempt == attempts:
                     raise last from exc
@@ -268,12 +279,17 @@ class Transport:
                     payload = response.json()
                 except ValueError as exc:
                     # A body that will not decode is Upstox answering something
-                    # other than what it documents. The same malformed answer
-                    # will arrive again, so it is not retryable.
-                    raise RejectedError(response.status_code, "", f"decoding {path}: {exc}") from exc
+                    # other than what it documents. For a read the same malformed
+                    # answer will arrive again, so it is not retryable; for a
+                    # write the success status says Upstox may well have acted.
+                    error = RejectedError if retry else UnknownOutcomeError
+                    raise error(response.status_code, "", f"decoding {path}: {exc}") from exc
                 return payload if isinstance(payload, dict) else {}
 
             last = _classify(response.status_code, code, message or body[:300], body)
+            if not retry and response.status_code >= 500 and last.retryable:
+                # A 500 or 504 can arrive after the order was accepted.
+                raise UnknownOutcomeError(response.status_code, code, last.message, body)
             if attempt == attempts or not last.retryable:
                 raise last
             delay = self._backoff(response, attempt)

@@ -15,6 +15,7 @@ import csv
 import datetime as dt
 import gzip
 import io
+import secrets
 import urllib.parse
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
@@ -116,6 +117,17 @@ def _first(*values: str) -> str:
     return ""
 
 
+TOKEN_RESET = dt.time(3, 30)
+"""The IST time of day at which Upstox invalidates every access token."""
+
+
+def next_token_reset(issued: dt.datetime) -> dt.datetime:
+    """The first daily token reset strictly after ``issued``."""
+    at = issued.astimezone(IST)
+    reset = dt.datetime.combine(at.date(), TOKEN_RESET, tzinfo=IST)
+    return reset if reset > at else reset + dt.timedelta(days=1)
+
+
 class UpstoxClient:
     """A tradekit adapter for the Upstox REST API."""
 
@@ -173,6 +185,9 @@ class UpstoxClient:
         self._redirect_uri = redirect_uri
         self._access_token = access_token
         self._token_issued_at = token_issued_at
+        # The state sent with the last login_url, which the callback must echo;
+        # empty when no login is in progress.
+        self._login_state = ""
         self._tag = tag
         self._instrument_key = instrument_key
         self._cached_keys: dict[str, dict[InstrumentKey, str]] = {}
@@ -188,9 +203,21 @@ class UpstoxClient:
     # --- auth ---------------------------------------------------------
 
     def login_url(self) -> str:
-        """The URL a user visits to authorise the app and obtain a code."""
+        """The URL a user visits to authorise the app and obtain a code.
+
+        Each call starts a new login attempt: a random state goes on the URL,
+        Upstox echoes it on the redirect, and :meth:`login_callback` refuses a
+        redirect that does not carry it. Without the check, anyone who can reach
+        the callback port can hand the process a code for their own account.
+        """
+        self._login_state = secrets.token_hex(16)
         query = urllib.parse.urlencode(
-            {"client_id": self._api_key, "redirect_uri": self._redirect_uri, "response_type": "code"}
+            {
+                "client_id": self._api_key,
+                "redirect_uri": self._redirect_uri,
+                "response_type": "code",
+                "state": self._login_state,
+            }
         )
         return f"{self._transport.base_url}/login/authorization/dialog?{query}"
 
@@ -244,7 +271,16 @@ class UpstoxClient:
         A refused or abandoned login comes back without a code; Upstox does not
         document a stable error parameter, so whatever it did send is quoted
         rather than guessed at.
+
+        Raises:
+            RuntimeError: If no login is in progress, the state does not match
+                the one :meth:`login_url` sent, or the login was refused.
+
         """
+        if not self._login_state:
+            raise RuntimeError("upstox: no login in progress; call login_url first")
+        if query.get("state", "") != self._login_state:
+            raise RuntimeError(f"upstox: login callback state {query.get('state', '')!r} does not match the one sent")
         code = query.get("code", "")
         if not code:
             reason = urllib.parse.urlencode(dict(query)) if query else "no code in callback"
@@ -257,20 +293,21 @@ class UpstoxClient:
         self._token_issued_at = issued_at
 
     def token_fresh(self) -> bool:
-        """Whether the access token is valid for the current trading day.
+        """Whether the access token is still valid.
 
-        Upstox tokens expire overnight, so a scheduler asks this before the open
-        and re-authenticates rather than discovering the problem on its first
-        order. The comparison is by IST calendar date, which is the granularity
-        the expiry actually has; a token of unknown age reads stale, because
-        assuming it is good is the failure this exists to prevent.
+        Upstox invalidates every token at a fixed reset around 03:30 IST, so a
+        scheduler asks this before the open and re-authenticates rather than
+        discovering the problem on its first order. Comparing calendar dates
+        instead would call a token issued at 02:00 fresh all day, though it dies
+        before dawn. A token of unknown age reads stale, because assuming it is
+        good is the failure this exists to prevent.
         """
         if not self._access_token or self._token_issued_at is None:
             return False
         issued = self._token_issued_at
         if issued.tzinfo is None:
             issued = issued.replace(tzinfo=dt.UTC)
-        return issued.astimezone(IST).date() == dt.datetime.now(IST).date()
+        return dt.datetime.now(IST) < next_token_reset(issued)
 
     # --- broker -------------------------------------------------------
 
@@ -789,30 +826,44 @@ class UpstoxClient:
         and does not have to know that.
 
         Raises:
-            ValueError: For an inverted range. Upstox answers one with an empty
+            ValueError: For naive bounds, or for an inverted range. Upstox answers one with an empty
                 series, which reads as "no trades".
 
         """
         unit, interval = to_interval(timeframe)
+        if start.tzinfo is None or end.tzinfo is None:
+            # A naive datetime would be read as the host's local time, which
+            # on a UTC server shifts the window by 5h30m and loses the
+            # session's latest bars.
+            raise ValueError("candle range bounds must be timezone-aware")
         if end < start:
             raise ValueError(f"upstox: candle range ends ({end.date()}) before it starts ({start.date()})")
         resolved = self._key_for(key)
         span = dt.timedelta(days=chunk_days(unit, interval))
 
+        # Upstox takes whole IST dates, both ends inclusive, so the chunks are
+        # built from dates: each starts the day after the previous one ended.
+        # Chunking on instants instead fetches the boundary day twice whenever
+        # ``start`` is not midnight, and every chunk seam then holds duplicate
+        # bars.
+        first, last = start.astimezone(IST).date(), end.astimezone(IST).date()
         out: list[Candle] = []
-        window_start = start
-        while window_start <= end:
-            window_end = min(window_start + span - dt.timedelta(seconds=1), end)
+        window_start = first
+        while window_start <= last:
+            window_end = min(window_start + span - dt.timedelta(days=1), last)
             # The path takes the LATER date first. Both Go and Python donors
             # order it this way; reversing it returns an empty series rather
             # than an error, which is why it is worth a comment.
             path = (
                 f"/historical-candle/{urllib.parse.quote(resolved, safe='')}"
-                f"/{unit}/{interval}/{window_end.date().isoformat()}/{window_start.date().isoformat()}"
+                f"/{unit}/{interval}/{window_end.isoformat()}/{window_start.isoformat()}"
             )
             out.extend(self._candles(path, self._transport.base_url_v3, key, timeframe))
-            window_start += span
-        return out
+            window_start = window_end + dt.timedelta(days=1)
+        if not timeframe.intraday:
+            return out
+        # The dates bound the request; the caller's instants bound the answer.
+        return [c for c in out if start <= c.start <= end]
 
     def intraday_candles(self, key: InstrumentKey, timeframe: Timeframe) -> list[Candle]:
         """Today's bars so far.
@@ -871,6 +922,11 @@ class UpstoxClient:
         v3 -- verified in zerobha, not assumed.
         """
         unit, interval = to_interval(timeframe)
+        if start.tzinfo is None or end.tzinfo is None:
+            # A naive datetime would be read as the host's local time, which
+            # on a UTC server shifts the window by 5h30m and loses the
+            # session's latest bars.
+            raise ValueError("candle range bounds must be timezone-aware")
         if end < start:
             raise ValueError(f"upstox: candle range ends ({end.date()}) before it starts ({start.date()})")
         segment, instrument_id = parse_instrument_key(expired_key)

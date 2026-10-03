@@ -31,6 +31,7 @@ from .transport import (
     TokenExpiredError,
     TransientError,
     Transport,
+    UnknownOutcomeError,
 )
 
 __all__ = [
@@ -46,6 +47,7 @@ __all__ = [
     "TokenExpiredError",
     "TransientError",
     "Transport",
+    "UnknownOutcomeError",
     "UpstoxClient",
     "parse_holidays",
     "parse_instrument_csv",

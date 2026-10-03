@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -133,15 +134,24 @@ func (c *Client) doOnce(ctx context.Context, req request) (retryAfter time.Durat
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		// A transport failure has no status to classify, and repeating it
+		// A transport failure has no status to classify. Repeating a read
 		// is legitimate: the connection, not the request, is what failed.
-		return 0, &APIError{Message: err.Error(), sentinel: ErrTransient}
+		// A write that may have been sent is another matter.
+		sentinel := ErrTransient
+		if !req.retry && mayHaveReached(err) {
+			sentinel = ErrUnknownOutcome
+		}
+		return 0, &APIError{Message: err.Error(), sentinel: sentinel}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return 0, &APIError{StatusCode: resp.StatusCode, Message: err.Error(), sentinel: ErrTransient}
+		sentinel := ErrTransient
+		if !req.retry {
+			sentinel = ErrUnknownOutcome
+		}
+		return 0, &APIError{StatusCode: resp.StatusCode, Message: err.Error(), sentinel: sentinel}
 	}
 	retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 
@@ -156,7 +166,7 @@ func (c *Client) doOnce(ctx context.Context, req request) (retryAfter time.Durat
 			StatusCode: resp.StatusCode,
 			Code:       code,
 			Message:    message,
-			sentinel:   classify(resp.StatusCode, code, string(raw)),
+			sentinel:   forRequest(req, resp.StatusCode, classify(resp.StatusCode, code, string(raw))),
 		}
 	}
 
@@ -168,7 +178,7 @@ func (c *Client) doOnce(ctx context.Context, req request) (retryAfter time.Durat
 			return 0, &APIError{
 				StatusCode: resp.StatusCode,
 				Message:    fmt.Sprintf("decoding %s: %v", req.path, err),
-				sentinel:   ErrRejected,
+				sentinel:   undecodable(req),
 			}
 		}
 	}
@@ -281,4 +291,41 @@ func (c *Client) doForm(ctx context.Context, req *http.Request, out any) error {
 		return &APIError{StatusCode: resp.StatusCode, Message: err.Error(), sentinel: ErrRejected}
 	}
 	return nil
+}
+
+// forRequest adjusts a response's classification for the request it answers.
+// A server error on a call that changes state is reported as an unknown outcome
+// rather than as transient: a 500 or 504 can arrive after Upstox has already
+// accepted the order.
+func forRequest(req request, status int, sentinel error) error {
+	if !req.retry && status >= 500 && errors.Is(sentinel, ErrTransient) {
+		return ErrUnknownOutcome
+	}
+	return sentinel
+}
+
+// undecodable classifies a success response whose body would not decode. For a
+// read it is a rejection: the same malformed answer will arrive again. For a
+// write the success status says Upstox may well have acted, so the outcome is
+// unknown rather than refused, and a caller must not assume nothing happened.
+func undecodable(req request) error {
+	if req.retry {
+		return ErrRejected
+	}
+	return ErrUnknownOutcome
+}
+
+// mayHaveReached reports whether a transport failure could have happened after
+// the request left this process. A failure to resolve or connect cannot have;
+// anything later, such as a timeout waiting for the response, may have.
+func mayHaveReached(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return false
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return false
+	}
+	return true
 }

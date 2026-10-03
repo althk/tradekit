@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import itertools
 import json
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -48,6 +50,7 @@ from tradekit.upstox.transport import (
     TokenExpiredError,
     TransientError,
     Transport,
+    UnknownOutcomeError,
 )
 
 RELIANCE = InstrumentKey(exchange="NSE", symbol="RELIANCE")
@@ -272,7 +275,7 @@ def test_place_order_is_never_retried():
         return httpx.Response(503)
 
     client = make_client(handler)
-    with pytest.raises(TransientError):
+    with pytest.raises(UnknownOutcomeError):
         client.place_order(
             OrderRequest(key=RELIANCE, side=Side.BUY, quantity=10, type=OrderType.MARKET, product=Product.CNC)
         )
@@ -1098,8 +1101,73 @@ def test_login_callback_exchanges_the_code_from_the_query() -> None:
         instrument_key=lambda k: str(k),
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    assert client.login_callback({"code": "abc123"}) == "fresh"
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(client.login_url()).query)["state"][0]
+    with pytest.raises(RuntimeError, match="does not match"):
+        client.login_callback({"code": "abc123", "state": "forged"})
+    assert client.login_callback({"code": "abc123", "state": state}) == "fresh"
     assert "code=abc123" in sent[0]
     with pytest.raises(RuntimeError, match="access_denied"):
-        client.login_callback({"error": "access_denied"})
+        client.login_callback({"error": "access_denied", "state": state})
     assert len(sent) == 1, "a refusal must not reach the token endpoint"
+
+
+def test_candle_chunk_seams_do_not_repeat_a_day_when_start_is_mid_session():
+    handler, paths = candle_handler()
+    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    start = dt.datetime(2024, 1, 1, 9, 15, tzinfo=ist)
+    make_client(handler).candles(RELIANCE, Timeframe.M1, start, start + dt.timedelta(days=60))
+    windows = [(p.rsplit("/", 2)[-1], p.rsplit("/", 2)[-2]) for p in paths]
+    for (_, prev_end), (next_start, _) in itertools.pairwise(windows):
+        want = (dt.date.fromisoformat(prev_end) + dt.timedelta(days=1)).isoformat()
+        assert next_start == want, "the seam day is fetched twice"
+
+
+@pytest.mark.parametrize(
+    "respond",
+    [
+        lambda request: httpx.Response(504),
+        lambda request: httpx.Response(200, text="<html>ok</html>"),
+        lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("no answer", request=request)),
+    ],
+    ids=["server error", "undecodable success", "timeout after sending"],
+)
+def test_ambiguous_placement_is_not_transient(respond):
+    from tradekit.core.ports import UnknownOutcomeError as PortsUnknownOutcome
+
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return respond(request)
+
+    order = OrderRequest(key=RELIANCE, side=Side.BUY, quantity=1, type=OrderType.MARKET, product=Product.CNC)
+    with pytest.raises(PortsUnknownOutcome) as caught:
+        make_client(handler).place_order(order)
+    assert not caught.value.retryable, "retrying an ambiguous placement places a second order"
+    assert len(calls) == 1, "the placement must be sent once"
+
+
+def test_placement_that_never_connected_is_transient():
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    order = OrderRequest(key=RELIANCE, side=Side.BUY, quantity=1, type=OrderType.MARKET, product=Product.CNC)
+    with pytest.raises(Exception) as caught:
+        make_client(handler).place_order(order)
+    assert getattr(caught.value, "retryable", False), "a refused connection cannot have reached the broker"
+
+
+def test_next_token_reset_is_the_following_three_thirty_ist():
+    from tradekit.upstox.client import next_token_reset
+
+    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    assert next_token_reset(dt.datetime(2026, 1, 15, 2, 0, tzinfo=ist)) == dt.datetime(2026, 1, 15, 3, 30, tzinfo=ist)
+    assert next_token_reset(dt.datetime(2026, 1, 15, 8, 45, tzinfo=ist)) == dt.datetime(2026, 1, 16, 3, 30, tzinfo=ist)
+
+
+def test_candles_refuse_naive_bounds():
+    handler, paths = candle_handler()
+    naive = dt.datetime(2025, 4, 14, 9, 15)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        make_client(handler).candles(RELIANCE, Timeframe.M5, naive, naive + dt.timedelta(days=1))
+    assert paths == [], "a naive bound is read as host-local time and shifts the window"

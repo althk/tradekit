@@ -393,3 +393,30 @@ func TestInstrumentsReadsAnUncompressedBodyWhenTheServerDecompressed(t *testing.
 		t.Errorf("expected 4 instruments, got %d", len(instruments))
 	}
 }
+
+func TestCandlesChunkSeamsDoNotRepeatADayWhenFromIsMidSession(t *testing.T) {
+	c, paths := candleServer(t)
+	key := domain.InstrumentKey{Exchange: "NSE", Symbol: "RELIANCE"}
+	ist := time.FixedZone("IST", 5*3600+1800)
+	from := time.Date(2024, 1, 1, 9, 15, 0, 0, ist)
+	if _, err := c.Candles(context.Background(), key, domain.M1, from, from.AddDate(0, 0, 60)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	seen := map[string]bool{}
+	var prevEnd string
+	for i, p := range *paths {
+		parts := strings.Split(strings.Trim(p, "/"), "/")
+		start, end := parts[len(parts)-1], parts[len(parts)-2]
+		if i > 0 {
+			next, _ := time.Parse(time.DateOnly, prevEnd)
+			if want := next.AddDate(0, 0, 1).Format(time.DateOnly); start != want {
+				t.Errorf("chunk %d starts %s after a chunk ending %s; want %s, or the seam day is fetched twice", i, start, prevEnd, want)
+			}
+		}
+		if seen[start] {
+			t.Errorf("day %s requested twice", start)
+		}
+		seen[start] = true
+		prevEnd = end
+	}
+}

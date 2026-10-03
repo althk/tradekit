@@ -25,6 +25,10 @@ var (
 	// ErrRejected means Upstox refused the request on its merits. Repeating
 	// it unchanged will be refused again.
 	ErrRejected = errors.New("upstox: rejected")
+	// ErrUnknownOutcome means a call that changes state failed without saying
+	// whether Upstox acted on it. Reconcile before repeating it; see
+	// ports.ErrUnknownOutcome.
+	ErrUnknownOutcome = fmt.Errorf("upstox: %w", ports.ErrUnknownOutcome)
 )
 
 // rateLimitCode is Upstox's rate-limit error code.

@@ -370,12 +370,20 @@ func TestLoginCallbackExchangesTheCodeFromTheQuery(t *testing.T) {
 
 	c, _ := newTestClient(t, srv)
 	c.opts.APISecret = "secret"
-	token, err := c.LoginCallback(context.Background(), url.Values{"code": {"abc123"}})
+	login, _ := url.Parse(c.LoginURL())
+	state := login.Query().Get("state")
+	if state == "" {
+		t.Fatal("LoginURL must carry a state for the callback to echo")
+	}
+	if _, err := c.LoginCallback(context.Background(), url.Values{"code": {"abc123"}, "state": {"forged"}}); err == nil {
+		t.Fatal("a callback with the wrong state must be refused: it may carry someone else's code")
+	}
+	token, err := c.LoginCallback(context.Background(), url.Values{"code": {"abc123"}, "state": {state}})
 	if err != nil || token != "fresh-token" {
 		t.Fatalf("LoginCallback = (%q, %v); want the exchanged token", token, err)
 	}
 
-	_, err = c.LoginCallback(context.Background(), url.Values{"error": {"access_denied"}})
+	_, err = c.LoginCallback(context.Background(), url.Values{"error": {"access_denied"}, "state": {state}})
 	if err == nil || !strings.Contains(err.Error(), "access_denied") {
 		t.Fatalf("a callback without a code must fail and quote what the broker sent, got %v", err)
 	}
