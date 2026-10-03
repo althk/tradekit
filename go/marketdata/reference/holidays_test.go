@@ -113,6 +113,69 @@ func TestHolidaysBoundTheRequestedRange(t *testing.T) {
 	}
 }
 
+// rangedSource answers only for the range it is asked about, as every real
+// source does, and records the ranges it was asked for.
+type rangedSource struct {
+	days  map[string]string
+	asked [][2]string
+}
+
+func (r *rangedSource) Closed(_ context.Context, _ string, from, to time.Time) (map[string]string, error) {
+	lo, hi := from.Format(time.DateOnly), to.Format(time.DateOnly)
+	r.asked = append(r.asked, [2]string{lo, hi})
+	out := map[string]string{}
+	for d, desc := range r.days {
+		if d >= lo && d <= hi {
+			out[d] = desc
+		}
+	}
+	return out, nil
+}
+
+func TestANarrowFirstQueryDoesNotHideOtherHolidays(t *testing.T) {
+	source := &rangedSource{days: map[string]string{
+		"2025-08-15": "Independence Day",
+		"2025-10-02": "Gandhi Jayanti",
+		"2026-01-26": "Republic Day",
+	}}
+	h, _ := NewHolidays(source, filepath.Join(t.TempDir(), "holidays.json"))
+
+	if _, err := h.Closed(context.Background(), "NSE", day(2025, 8, 15), day(2025, 8, 15)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	closed, _ := h.Closed(context.Background(), "NSE", day(2025, 10, 2), day(2025, 10, 2))
+	if closed["2025-10-02"] == "" {
+		t.Errorf("a calendar fetched for one day must not be taken as the whole calendar; every other holiday would read as a trading day; got %v", closed)
+	}
+	if len(source.asked) != 1 {
+		t.Errorf("a day in a year already fetched must be served from memory; the source was asked %v", source.asked)
+	}
+
+	closed, _ = h.Closed(context.Background(), "NSE", day(2026, 1, 26), day(2026, 1, 26))
+	if closed["2026-01-26"] == "" {
+		t.Errorf("a day outside the fetched range must be fetched, not read from the cache as open; got %v", closed)
+	}
+	again, _ := h.Closed(context.Background(), "NSE", day(2025, 8, 15), day(2025, 8, 15))
+	if again["2025-08-15"] == "" || len(source.asked) != 2 {
+		t.Errorf("widening the range must keep what was already known; got %v after asking %v", again, source.asked)
+	}
+}
+
+func TestACacheWithoutARecordedRangeIsRefetched(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "holidays.json")
+	legacy := `{"fetched_at":"` + time.Now().Format(time.RFC3339) + `","days":{"NSE":{"2025-08-15":"Independence Day"}}}`
+	if err := os.WriteFile(cache, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source := &rangedSource{days: map[string]string{"2025-10-02": "Gandhi Jayanti"}}
+	h, _ := NewHolidays(source, cache)
+
+	closed, _ := h.Closed(context.Background(), "NSE", day(2025, 10, 2), day(2025, 10, 2))
+	if closed["2025-10-02"] == "" {
+		t.Errorf("a cache of unknown extent, written before ranges were recorded, must be refetched; got %v", closed)
+	}
+}
+
 func TestACacheOnlySourceNeedsNoNetwork(t *testing.T) {
 	cache := filepath.Join(t.TempDir(), "holidays.json")
 	primed, _ := NewHolidays(&fakeSource{days: map[string]string{"2025-08-15": "Independence Day"}}, cache)

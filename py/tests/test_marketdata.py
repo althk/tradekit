@@ -681,6 +681,45 @@ def test_a_cache_miss_and_a_failed_fetch_fail_open(tmp_path: Path) -> None:
     )
 
 
+class _Ranged:
+    """Answers only for the range it is asked about, as every real source does."""
+
+    def __init__(self, days: dict[str, str]) -> None:
+        self.days = days
+        self.asked: list[tuple[dt.date, dt.date]] = []
+
+    def closed(self, exchange: str, start: dt.date, end: dt.date) -> dict[str, str]:
+        self.asked.append((start, end))
+        lo, hi = start.isoformat(), end.isoformat()
+        return {d: desc for d, desc in self.days.items() if lo <= d <= hi}
+
+
+def test_a_narrow_first_query_does_not_hide_other_holidays(tmp_path: Path) -> None:
+    live = _Ranged({"2025-08-15": "Independence Day", "2025-10-02": "Gandhi Jayanti", "2026-01-26": "Republic Day"})
+    h = reference.Holidays(live, tmp_path / "holidays.json")
+    h.closed("NSE", dt.date(2025, 8, 15), dt.date(2025, 8, 15))
+    assert h.closed("NSE", dt.date(2025, 10, 2), dt.date(2025, 10, 2)) == {"2025-10-02": "Gandhi Jayanti"}, (
+        "a calendar fetched for one day must not be taken as the whole calendar"
+    )
+    assert len(live.asked) == 1, "a day in a year already fetched is served from memory"
+
+    assert h.closed("NSE", dt.date(2026, 1, 26), dt.date(2026, 1, 26)) == {"2026-01-26": "Republic Day"}, (
+        "a day outside the fetched range must be fetched, not read as open"
+    )
+    assert h.closed("NSE", dt.date(2025, 8, 15), dt.date(2025, 8, 15)) == {"2025-08-15": "Independence Day"}
+    assert len(live.asked) == 2, "widening the range keeps what was already known"
+
+
+def test_a_cache_without_a_recorded_range_is_refetched(tmp_path: Path) -> None:
+    path = tmp_path / "holidays.json"
+    now = dt.datetime.now(dt.UTC).isoformat()
+    path.write_text(json.dumps({"fetched_at": now, "days": {"NSE": {"2025-08-15": "Independence Day"}}}))
+    h = reference.Holidays(_Ranged({"2025-10-02": "Gandhi Jayanti"}), path)
+    assert h.closed("NSE", dt.date(2025, 10, 2), dt.date(2025, 10, 2)) == {"2025-10-02": "Gandhi Jayanti"}, (
+        "a cache of unknown extent must be refetched"
+    )
+
+
 def test_holidays_need_something_to_read_from() -> None:
     with pytest.raises(ValueError):
         reference.Holidays(None, None)

@@ -121,6 +121,11 @@ class Holidays:
         self._now = now
         self._lock = threading.Lock()
         self._loaded: dict[str, dict[str, str]] | None = None
+        # exchange -> the inclusive ("YYYY-MM-DD", "YYYY-MM-DD") range its
+        # calendar answers for. A source answers only for the range it was
+        # asked about, so a calendar fetched for one day says nothing about the
+        # next; treating it as complete would read every other holiday as open.
+        self._covered: dict[str, tuple[str, str]] = {}
         self._at: dt.datetime | None = None
 
     def closed(self, exchange: str, start: dt.date, end: dt.date) -> dict[str, str]:
@@ -147,7 +152,9 @@ class Holidays:
             if self._loaded is None:
                 self._load_cache()
             assert self._loaded is not None
-            if not self._stale() and exchange in self._loaded:
+            fresh = not self._stale()
+            cov = self._covered.get(exchange)
+            if fresh and cov is not None and cov[0] <= start.isoformat() and end.isoformat() <= cov[1]:
                 return self._loaded[exchange]
 
             if self.source is None:
@@ -155,8 +162,15 @@ class Holidays:
                     return self._loaded[exchange]
                 raise LookupError(f"reference: no cached calendar for {exchange} and no live source")
 
+            # Ask for whole calendar years, so the next question about a nearby
+            # day is answered from memory, and keep a still-fresh range so
+            # widening it does not forget what was already known.
+            want = (dt.date(start.year, 1, 1).isoformat(), dt.date(end.year, 12, 31).isoformat())
+            if fresh and cov is not None:
+                want = (min(want[0], cov[0]), max(want[1], cov[1]))
+
             try:
-                fresh = self.source.closed(exchange, start, end)
+                got = self.source.closed(exchange, dt.date.fromisoformat(want[0]), dt.date.fromisoformat(want[1]))
             except Exception:
                 # The live fetch failed. A stale calendar is far better than
                 # none: exchanges publish the year in advance, so last week's
@@ -165,7 +179,8 @@ class Holidays:
                     return self._loaded[exchange]
                 raise
 
-            self._loaded[exchange] = dict(fresh)
+            self._loaded[exchange] = dict(got)
+            self._covered[exchange] = want
             self._at = self._clock()
             self._save_cache()
             return self._loaded[exchange]
@@ -182,6 +197,7 @@ class Holidays:
         looks like, and the live source is about to be consulted anyway.
         """
         self._loaded = {}
+        self._covered = {}
         if self.cache_path is None:
             return
         try:
@@ -191,6 +207,15 @@ class Holidays:
         days = file.get("days") if isinstance(file, dict) else None
         if isinstance(days, dict):
             self._loaded = {ex: dict(d) for ex, d in days.items()}
+            # A cache written before ranges were recorded has none, so a live
+            # source refetches rather than trusting a calendar of unknown extent.
+            covered = file.get("covered")
+            if isinstance(covered, dict):
+                self._covered = {
+                    ex: (str(c["from"]), str(c["to"]))
+                    for ex, c in covered.items()
+                    if isinstance(c, dict) and "from" in c and "to" in c
+                }
             try:
                 self._at = dt.datetime.fromisoformat(str(file.get("fetched_at")))
             except ValueError:
@@ -207,7 +232,11 @@ class Holidays:
         """
         if self.cache_path is None or self._at is None:
             return
-        payload = {"fetched_at": self._at.isoformat(), "days": self._loaded}
+        payload = {
+            "fetched_at": self._at.isoformat(),
+            "days": self._loaded,
+            "covered": {ex: {"from": lo, "to": hi} for ex, (lo, hi) in self._covered.items()},
+        }
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             self.cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

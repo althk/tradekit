@@ -113,10 +113,23 @@ type Holidays struct {
 	// Now is injectable for tests.
 	Now func() time.Time
 
-	mu     sync.Mutex
-	loaded map[string]map[string]string // exchange -> "YYYY-MM-DD" -> description
-	at     time.Time
+	mu      sync.Mutex
+	loaded  map[string]map[string]string // exchange -> "YYYY-MM-DD" -> description
+	covered map[string]span              // exchange -> the range loaded[exchange] answers for
+	at      time.Time
 }
+
+// span is an inclusive range of "YYYY-MM-DD" dates.
+//
+// It exists because a source answers only for the range it was asked about: a
+// calendar fetched for one day says nothing about the next, and treating it
+// as complete would read every other holiday as a trading day.
+type span struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func (s span) contains(lo, hi string) bool { return s.From <= lo && hi <= s.To }
 
 // cacheFile is the on-disk shape. Dates are "YYYY-MM-DD" strings, per
 // invariant 4: a time-keyed map compiles, looks right and never matches,
@@ -125,6 +138,7 @@ type Holidays struct {
 type cacheFile struct {
 	FetchedAt time.Time                    `json:"fetched_at"`
 	Days      map[string]map[string]string `json:"days"`
+	Covered   map[string]span              `json:"covered,omitempty"`
 }
 
 // NewHolidays returns a cached holiday source. A nil live source is permitted
@@ -170,10 +184,10 @@ func (h *Holidays) calendar(ctx context.Context, exchange string, from, to time.
 	if h.loaded == nil {
 		h.loadCache()
 	}
-	if !h.stale() {
-		if days, ok := h.loaded[exchange]; ok {
-			return days, nil
-		}
+	fresh := !h.stale()
+	cov, known := h.covered[exchange]
+	if fresh && known && cov.contains(from.Format(time.DateOnly), to.Format(time.DateOnly)) {
+		return h.loaded[exchange], nil
 	}
 
 	if h.Source == nil {
@@ -183,7 +197,17 @@ func (h *Holidays) calendar(ctx context.Context, exchange string, from, to time.
 		return nil, fmt.Errorf("reference: no cached calendar for %s and no live source", exchange)
 	}
 
-	fresh, err := h.Source.Closed(ctx, exchange, from, to)
+	// Ask for whole calendar years, so the next question about a nearby day is
+	// answered from memory, and keep a still-fresh range so widening it does
+	// not forget what was already known.
+	want := span{From: fmt.Sprintf("%04d-01-01", from.Year()), To: fmt.Sprintf("%04d-12-31", to.Year())}
+	if fresh && known {
+		want.From, want.To = min(want.From, cov.From), max(want.To, cov.To)
+	}
+	start, _ := time.ParseInLocation(time.DateOnly, want.From, from.Location())
+	end, _ := time.ParseInLocation(time.DateOnly, want.To, to.Location())
+
+	got, err := h.Source.Closed(ctx, exchange, start, end)
 	if err != nil {
 		// The live fetch failed. A stale calendar is far better than none:
 		// exchanges publish the year in advance, so last week's copy is
@@ -194,13 +218,11 @@ func (h *Holidays) calendar(ctx context.Context, exchange string, from, to time.
 		return nil, err
 	}
 
-	if h.loaded == nil {
-		h.loaded = map[string]map[string]string{}
-	}
-	h.loaded[exchange] = fresh
+	h.loaded[exchange] = got
+	h.covered[exchange] = want
 	h.at = h.now()
 	h.saveCache()
-	return fresh, nil
+	return got, nil
 }
 
 // stale reports whether the loaded calendar is old enough to refetch.
@@ -221,6 +243,7 @@ func (h *Holidays) stale() bool {
 // like, and the live source is about to be consulted anyway.
 func (h *Holidays) loadCache() {
 	h.loaded = map[string]map[string]string{}
+	h.covered = map[string]span{}
 	if h.CachePath == "" {
 		return
 	}
@@ -235,6 +258,11 @@ func (h *Holidays) loadCache() {
 	if file.Days != nil {
 		h.loaded = file.Days
 		h.at = file.FetchedAt
+		// A cache written before ranges were recorded has none, so a live
+		// source refetches rather than trusting a calendar of unknown extent.
+		if file.Covered != nil {
+			h.covered = file.Covered
+		}
 	}
 }
 
@@ -247,7 +275,7 @@ func (h *Holidays) saveCache() {
 	if h.CachePath == "" {
 		return
 	}
-	raw, err := json.MarshalIndent(cacheFile{FetchedAt: h.at, Days: h.loaded}, "", "  ")
+	raw, err := json.MarshalIndent(cacheFile{FetchedAt: h.at, Days: h.loaded, Covered: h.covered}, "", "  ")
 	if err != nil {
 		return
 	}
