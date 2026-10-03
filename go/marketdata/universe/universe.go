@@ -15,6 +15,7 @@ package universe
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -186,17 +187,34 @@ func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 // today before the file is published, and a sync must not log those as errors.
 var ErrNotPublished = fmt.Errorf("universe: NSE has published no file for this date")
 
+// indexCacheTTL is how long a cached index constituent list is reused. NSE
+// revises constituents periodically; a list cached forever would never add a
+// joiner or retire a leaver.
+const indexCacheTTL = 7 * 24 * time.Hour
+
 // fetchCached returns a file's bytes, reading the cache when it holds them.
-func (c *Client) fetchCached(ctx context.Context, url, cacheName string) ([]byte, error) {
+//
+// A ttl of zero caches forever, which is right for a dated file such as a
+// bhavcopy. With a ttl, an older cached copy is refetched, and kept as the
+// answer only if the refetch fails.
+func (c *Client) fetchCached(ctx context.Context, url, cacheName string, ttl time.Duration) ([]byte, error) {
 	if c.CacheDir == "" {
 		return c.get(ctx, url)
 	}
 	path := filepath.Join(c.CacheDir, cacheName)
-	if body, err := os.ReadFile(path); err == nil && len(body) > 0 {
-		return body, nil
+	cached, readErr := os.ReadFile(path)
+	haveCache := readErr == nil && len(cached) > 0
+	if haveCache {
+		info, err := os.Stat(path)
+		if ttl == 0 || (err == nil && time.Since(info.ModTime()) < ttl) {
+			return cached, nil
+		}
 	}
 	body, err := c.get(ctx, url)
 	if err != nil {
+		if haveCache {
+			return cached, nil
+		}
 		return nil, err
 	}
 	if err := os.MkdirAll(c.CacheDir, 0o755); err != nil {
@@ -229,7 +247,7 @@ func (c *Client) archives(format string, args ...any) string {
 // every run is both wasteful and the reason five projects ended up with a stale
 // copy checked into their repositories.
 func (c *Client) IndexConstituents(ctx context.Context, index string) ([]domain.InstrumentKey, error) {
-	body, err := c.fetchCached(ctx, c.archives(indexListURL, index), index+".csv")
+	body, err := c.fetchCached(ctx, c.archives(indexListURL, index), index+".csv", indexCacheTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +265,7 @@ func (c *Client) IndexConstituents(ctx context.Context, index string) ([]domain.
 // Constituents returns the index's members with the name and sector the list
 // carries, for a caller populating the instruments table.
 func (c *Client) Constituents(ctx context.Context, index string) ([]domain.Instrument, error) {
-	body, err := c.fetchCached(ctx, c.archives(indexListURL, index), index+".csv")
+	body, err := c.fetchCached(ctx, c.archives(indexListURL, index), index+".csv", indexCacheTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -313,12 +331,14 @@ func ParseIndexCSV(body []byte) ([]domain.Instrument, error) {
 			continue
 		}
 		out = append(out, domain.Instrument{
-			Key:      domain.InstrumentKey{Exchange: "NSE", Symbol: symbol},
-			Name:     at(row, nameAt),
-			ISIN:     strings.ToUpper(strings.TrimSpace(at(row, isinAt))),
-			Segment:  sectorOrEquity(at(row, sectorAt)),
-			LotSize:  1,
-			TickSize: money.Money(5),
+			Key:     domain.InstrumentKey{Exchange: "NSE", Symbol: symbol},
+			Name:    at(row, nameAt),
+			ISIN:    strings.ToUpper(strings.TrimSpace(at(row, isinAt))),
+			Segment: sectorOrEquity(at(row, sectorAt)),
+			// The list carries neither: zero leaves whatever the broker
+			// master stored, and reference falls back safely when nothing has.
+			LotSize:  0,
+			TickSize: 0,
 			Active:   true,
 		})
 	}
@@ -366,7 +386,7 @@ var equitySeries = map[string]bool{"EQ": true, "BE": true}
 // cached: a published bhavcopy never changes.
 func (c *Client) Bhavcopy(ctx context.Context, day time.Time) ([]Row, error) {
 	stamp := day.Format("02012006")
-	body, err := c.fetchCached(ctx, c.archives(bhavcopyURL, stamp), "sec_bhavdata_full_"+stamp+".csv")
+	body, err := c.fetchCached(ctx, c.archives(bhavcopyURL, stamp), "sec_bhavdata_full_"+stamp+".csv", 0)
 	if err != nil {
 		return nil, err
 	}
@@ -444,13 +464,19 @@ func ParseBhavcopy(body []byte, day time.Time) ([]Row, error) {
 }
 
 // Candles converts bhavcopy rows into daily bars.
+//
+// The bar is stamped at midnight IST on the row's calendar date, the instant
+// broker adapters and the CSV tree use for a daily bar. Stamping it with
+// whatever time the caller passed as the day -- time.Now(), say -- would give
+// the same session a second primary key in the store, and every daily series
+// a duplicate bar.
 func Candles(rows []Row) []domain.Candle {
 	out := make([]domain.Candle, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, domain.Candle{
 			Key:       r.Key,
 			Timeframe: domain.D1,
-			Start:     r.Date,
+			Start:     time.Date(r.Date.Year(), r.Date.Month(), r.Date.Day(), 0, 0, 0, 0, istLocation()),
 			Open:      r.Open,
 			High:      r.High,
 			Low:       r.Low,
@@ -474,6 +500,11 @@ type SyncReport struct {
 // Instruments that left the index are deactivated, never deleted. Deleting one
 // orphans every candle and trade that references it — and those rows are the
 // history a backtest of the strategy that held it is computed from.
+//
+// "Left the index" means a member at the previous sync of this same index that
+// is not one now. The membership is remembered in kv_state for that purpose:
+// deactivating everything on NSE outside this list instead would switch off
+// every instrument the broker master or another index put there.
 func (c *Client) Sync(ctx context.Context, db *store.DB, index string) (SyncReport, error) {
 	instruments, err := c.Constituents(ctx, index)
 	if err != nil {
@@ -485,16 +516,32 @@ func (c *Client) Sync(ctx context.Context, db *store.DB, index string) (SyncRepo
 		// and the next run would find nothing to trade.
 		return SyncReport{}, fmt.Errorf("universe: index %q returned no constituents; refusing to deactivate the whole universe", index)
 	}
+	membersKey := "universe.members." + index
+	var previous []string
+	if err := db.GetState(ctx, membersKey, &previous); err != nil && !errors.Is(err, store.ErrStateNotFound) {
+		return SyncReport{}, err
+	}
 	if err := db.UpsertInstruments(ctx, instruments); err != nil {
 		return SyncReport{}, err
 	}
 
-	keep := make([]domain.InstrumentKey, 0, len(instruments))
+	current := make(map[string]bool, len(instruments))
+	members := make([]string, 0, len(instruments))
 	for _, in := range instruments {
-		keep = append(keep, in.Key)
+		current[in.Key.Symbol] = true
+		members = append(members, in.Key.Symbol)
 	}
-	deactivated, err := db.DeactivateMissing(ctx, "NSE", keep)
+	var leavers []domain.InstrumentKey
+	for _, symbol := range previous {
+		if !current[symbol] {
+			leavers = append(leavers, domain.InstrumentKey{Exchange: "NSE", Symbol: symbol})
+		}
+	}
+	deactivated, err := db.DeactivateInstruments(ctx, leavers)
 	if err != nil {
+		return SyncReport{}, err
+	}
+	if err := db.SetState(ctx, membersKey, members); err != nil {
 		return SyncReport{}, err
 	}
 	return SyncReport{Fetched: len(instruments), Deactivated: deactivated}, nil
@@ -554,3 +601,13 @@ func parseInt(s string) (int64, bool) {
 	}
 	return int64(v), true
 }
+
+// istLocation returns India Standard Time, falling back to a fixed +05:30
+// zone on a host without tzdata. India has no daylight saving, so the fixed
+// zone is exact rather than an approximation.
+var istLocation = sync.OnceValue(func() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Kolkata"); err == nil {
+		return loc
+	}
+	return time.FixedZone("IST", 5*3600+1800)
+})

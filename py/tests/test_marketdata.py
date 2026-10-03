@@ -629,12 +629,38 @@ def test_base_url_rewrites_the_host_and_keeps_the_path() -> None:
     assert fetcher.calls[1] == "http://127.0.0.1:9/content/indices/x.csv"
 
 
-def test_sync_deactivates_instruments_that_left_the_index(db: Database) -> None:
+def test_sync_deactivates_only_leavers_of_this_index(db: Database) -> None:
+    db.upsert_instruments([Instrument(key=InstrumentKey("NSE", "OTHER"))])
+    db.set_state("universe.members.ind_nifty500list", ["RELIANCE", "TCS", "GONE"])
     db.upsert_instruments([Instrument(key=InstrumentKey("NSE", "GONE"))])
     client = universe.Client(None, fetcher=_Fetcher([(200, INDEX_CSV)]))
     report = client.sync(db, "ind_nifty500list")
     assert report.fetched == 2 and report.deactivated == 1
     assert not db.instrument(InstrumentKey("NSE", "GONE")).active, "deactivated, never deleted"
+    assert db.instrument(InstrumentKey("NSE", "OTHER")).active, "never in this index, so not a leaver"
+
+
+def test_sync_keeps_the_masters_tick_and_lot_sizes(db: Database) -> None:
+    db.upsert_instruments(
+        [Instrument(key=RELIANCE, name="RELIANCE", isin="INE002A01018", lot_size=1, tick_size=money.parse("0.10"))]
+    )
+    universe.Client(None, fetcher=_Fetcher([(200, INDEX_CSV)])).sync(db, "ind_nifty500list")
+    got = db.instrument(RELIANCE)
+    assert got.tick_size == money.parse("0.10"), "a default tick puts every stop off the exchange's grid"
+    assert got.name == "Reliance Industries Ltd."
+
+
+def test_a_stale_index_list_is_refetched(tmp_path: Path) -> None:
+    import os
+    import time
+
+    cached = tmp_path / "ind_nifty500list.csv"
+    cached.write_bytes(INDEX_CSV)
+    old = time.time() - 30 * 86400
+    os.utime(cached, (old, old))
+    fetcher = _Fetcher([(200, INDEX_CSV)])
+    universe.Client(tmp_path, fetcher=fetcher).constituents("ind_nifty500list")
+    assert any("ind_nifty500list" in c for c in fetcher.calls), "a month-old list must be refetched"
 
 
 def test_sync_refuses_an_empty_index(db: Database) -> None:

@@ -29,7 +29,7 @@ from typing import Protocol
 from tradekit.core import money
 from tradekit.core.domain import Candle, Instrument, InstrumentKey, Timeframe
 from tradekit.core.money import Money
-from tradekit.store import Database
+from tradekit.store import Database, StateNotFoundError
 
 __all__ = [
     "Client",
@@ -59,6 +59,11 @@ NSE serves 403 to a request that does not look like a browser, whatever cookies
 it carries. Both donors send a desktop Chrome string; this is not evasion of a
 rate limit but the minimum needed to be served at all.
 """
+
+
+INDEX_CACHE_TTL = dt.timedelta(days=7)
+"""How long a cached index constituent list is reused. NSE revises constituents
+periodically; a list cached forever would never add a joiner or retire a leaver."""
 
 
 class NotPublishedError(LookupError):
@@ -176,18 +181,29 @@ class Client:
             raise RuntimeError(f"universe: {url}: HTTP {status}")
         raise RuntimeError(f"universe: {url}: refused twice, even after warming up")
 
-    def _fetch_cached(self, url: str, cache_name: str) -> bytes:
-        """A file's bytes, reading the cache when it holds them."""
+    def _fetch_cached(self, url: str, cache_name: str, ttl: dt.timedelta | None = None) -> bytes:
+        """A file's bytes, reading the cache when it holds them.
+
+        A ``ttl`` of ``None`` caches forever, which is right for a dated file
+        such as a bhavcopy. With a ttl, an older cached copy is refetched, and
+        kept as the answer only if the refetch fails.
+        """
         if self.cache_dir is None:
             return self._get(url)
         path = self.cache_dir / cache_name
         try:
-            body = path.read_bytes()
+            cached = path.read_bytes()
+            age = dt.datetime.now().timestamp() - path.stat().st_mtime
         except OSError:
-            body = b""
-        if body:
-            return body
-        body = self._get(url)
+            cached, age = b"", 0.0
+        if cached and (ttl is None or age < ttl.total_seconds()):
+            return cached
+        try:
+            body = self._get(url)
+        except Exception:
+            if cached:
+                return cached
+            raise
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body)
         return body
@@ -217,7 +233,7 @@ class Client:
 
     def constituents(self, index: str) -> list[Instrument]:
         """The index's members with the name the list carries, for a caller populating the instruments table."""
-        body = self._fetch_cached(self._archives(INDEX_LIST_URL, index), index + ".csv")
+        body = self._fetch_cached(self._archives(INDEX_LIST_URL, index), index + ".csv", INDEX_CACHE_TTL)
         return parse_index_csv(body)
 
     def bhavcopy(self, day: dt.date) -> list[Row]:
@@ -238,6 +254,12 @@ class Client:
         one orphans every candle and trade that references it -- and those rows
         are the history a backtest of the strategy that held it is computed
         from.
+
+        "Left the index" means a member at the previous sync of this same index
+        that is not one now; the membership is remembered in ``kv_state`` for
+        that purpose. Deactivating everything on NSE outside this list instead
+        would switch off every instrument the broker master or another index
+        put there.
         """
         instruments = self.constituents(index)
         if not instruments:
@@ -247,8 +269,16 @@ class Client:
             raise ValueError(
                 f"universe: index {index!r} returned no constituents; refusing to deactivate the whole universe"
             )
+        members_key = f"universe.members.{index}"
+        try:
+            previous = list(db.get_state(members_key) or [])
+        except StateNotFoundError:
+            previous = []
         db.upsert_instruments(instruments)
-        deactivated = db.deactivate_missing("NSE", [i.key for i in instruments])
+        current = [i.key.symbol for i in instruments]
+        leavers = [InstrumentKey("NSE", s) for s in previous if s not in set(current)]
+        deactivated = db.deactivate_instruments(leavers)
+        db.set_state(members_key, current)
         return SyncReport(fetched=len(instruments), deactivated=deactivated)
 
 
@@ -321,8 +351,10 @@ def parse_index_csv(body: bytes) -> list[Instrument]:
                 name=_at(row, name_at),
                 isin=_at(row, isin_at).strip().upper(),
                 segment="equity",
-                lot_size=1,
-                tick_size=Money(5),
+                # The list carries neither: zero leaves whatever the broker
+                # master stored, and reference falls back safely when nothing has.
+                lot_size=0,
+                tick_size=Money(0),
                 active=True,
             )
         )

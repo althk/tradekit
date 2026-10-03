@@ -55,8 +55,8 @@ func TestParseIndexCSVReadsThePublishedList(t *testing.T) {
 	if first.Segment != "equity" {
 		t.Errorf("everything in an equity index is equity; the Industry column is a sector and the domain has no field for it. got %q", first.Segment)
 	}
-	if first.LotSize != 1 || first.TickSize <= 0 {
-		t.Errorf("an index list carries no lot or tick, so sane defaults are needed: %+v", first)
+	if first.LotSize != 0 || first.TickSize != 0 {
+		t.Errorf("an index list carries no lot or tick and must say so with zero, so the store keeps the broker master's real values: %+v", first)
 	}
 }
 
@@ -145,8 +145,8 @@ func TestCandlesConvertsBhavcopyRows(t *testing.T) {
 	if candles[0].Timeframe != "1d" {
 		t.Errorf("a bhavcopy row is a daily bar, got timeframe %q", candles[0].Timeframe)
 	}
-	if !candles[0].Start.Equal(day) {
-		t.Errorf("the bar is stamped with the file's day, got %v", candles[0].Start)
+	if want := time.Date(2025, 4, 17, 0, 0, 0, 0, time.FixedZone("IST", 5*3600+1800)); !candles[0].Start.Equal(want) {
+		t.Errorf("the bar is stamped at midnight IST on the file's day, as broker daily bars are; got %v", candles[0].Start)
 	}
 }
 
