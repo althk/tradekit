@@ -294,6 +294,25 @@ NSE_FO|54321,NIFTY24500CE,Nifty 50,,75,0.05,CE,2025-04-17,24500
 NSE_INDEX|Nifty 50,Nifty 50,Nifty 50,,0,0,INDEX,,
 `
 
+// The master Upstox actually publishes has no isin column: a cash equity's
+// ISIN exists only as the id half of its instrument key.
+func TestInstrumentsReadTheISINFromTheKeyWhenTheColumnIsAbsent(t *testing.T) {
+	const published = `instrument_key,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,option_type,exchange
+NSE_EQ|INE002A01018,2885,RELIANCE,RELIANCE INDUSTRIES LTD,0,,,0.1,1,EQUITY,,NSE_EQ
+NSE_FO|54321,54321,NIFTY24500CE,NIFTY,0,2025-04-17,24500,0.05,75,CE,CE,NSE_FO
+`
+	got, err := parseInstrumentCSV(strings.NewReader(published))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].ISIN != "INE002A01018" {
+		t.Fatalf("a cash equity's ISIN must come from its key when the column is absent, got %+v", got)
+	}
+	if got[1].ISIN != "" {
+		t.Errorf("a derivative's key is an exchange token, not an ISIN; got %q", got[1].ISIN)
+	}
+}
+
 func gzipped(s string) []byte {
 	var buf bytes.Buffer
 	w := gzip.NewWriter(&buf)

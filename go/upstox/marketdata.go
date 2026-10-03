@@ -540,16 +540,22 @@ func parseInstrumentCSV(r io.Reader) ([]domain.Instrument, error) {
 		if symbol == "" || instrumentKey == "" {
 			continue
 		}
-		segment, _, err := parseInstrumentKey(instrumentKey)
+		segment, id, err := parseInstrumentKey(instrumentKey)
 		if err != nil {
 			continue
+		}
+		isin := field("isin")
+		if isin == "" && strings.HasSuffix(strings.ToUpper(segment), "_EQ") {
+			// The published CSV master has no isin column; a cash
+			// instrument's key is its ISIN, so read it from there.
+			isin = id
 		}
 
 		instrumentType := field("instrument_type")
 		in := domain.Instrument{
 			Key:        domain.InstrumentKey{Exchange: exchangeFor(segment), Symbol: symbol},
 			Name:       field("name"),
-			ISIN:       field("isin"),
+			ISIN:       isin,
 			Segment:    segmentOf(instrumentType, segment),
 			LotSize:    atoiOr(field("lot_size"), 1),
 			TickSize:   paise(atofOr(field("tick_size"), 0)),
