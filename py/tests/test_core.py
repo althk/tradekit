@@ -733,3 +733,30 @@ def test_averages_round_half_away_from_zero() -> None:
 
 def test_sharpe_of_a_constant_series_is_undefined() -> None:
     assert stats.sharpe([0.1, 0.1, 0.1]) is None, "float error in the mean is not variance"
+
+
+def test_slot_index_refuses_a_bar_at_the_close() -> None:
+    s = nse()
+    assert s.slot_index(_at(15, 30), Timeframe.M5) == -1, "a post-close print opened a 76th slot"
+    assert s.slot_index(_at(15, 44), Timeframe.M15) == -1
+    assert s.slot_index(_at(16, 0), Timeframe.M60) == -1
+
+
+def test_slot_count_includes_the_partial_last_bar() -> None:
+    s = nse()
+    assert s.slot_index(_at(15, 20), Timeframe.M60) == 6
+    assert s.slot_count(Timeframe.M60) == 7, "every index must be below the count"
+    assert s.slot_count(Timeframe.M5) == 75
+
+
+def test_bucket_start_weekly_is_monday() -> None:
+    monday = dt.datetime(2026, 1, 12, tzinfo=IST)
+    assert nse().bucket_start(_at(11, 0), Timeframe.W1) == monday, (
+        "a weekly bucket that is a day makes weekly bars daily"
+    )
+    assert nse().bucket_start(dt.datetime(2026, 1, 18, 9, 0, tzinfo=IST), Timeframe.W1) == monday
+
+
+def test_in_session_excludes_the_closing_minute() -> None:
+    assert nse().in_session(_at(15, 30))
+    assert not nse().in_session(_at(15, 30) + dt.timedelta(seconds=45))

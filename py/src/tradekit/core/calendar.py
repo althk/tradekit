@@ -67,12 +67,15 @@ class Session:
         return d.weekday() in self.trading_weekdays
 
     def in_session(self, t: dt.datetime) -> bool:
-        """Whether ``t`` falls inside the regular window, both bounds included."""
+        """Whether ``t`` falls inside the regular window, both boundary instants included.
+
+        The comparison is on instants, not whole minutes: 15:30:45 is after a
+        15:30 close, and treating the closing minute as open would admit a print
+        from the post-close session.
+        """
         if not self.is_weekday(t):
             return False
-        local = t.astimezone(self.tz)
-        minutes = local.hour * 60 + local.minute
-        return self.open_minute <= minutes <= self.close_minute
+        return self.open(t) <= t <= self.close(t)
 
     def bucket_start(self, t: dt.datetime, timeframe: Timeframe) -> dt.datetime:
         """Align a timestamp to the start of its bar, anchored to the open.
@@ -82,12 +85,15 @@ class Session:
         boundary. A timestamp before the open clamps to the open, so a pre-market
         print lands in the first bar rather than in a phantom bar of its own.
 
-        A non-intraday timeframe returns the session date at midnight, which is
-        the correct bucket for a daily bar.
+        A daily timeframe returns the session date at midnight, and a weekly one
+        the Monday of ``t``'s week, which are the buckets daily and weekly bars
+        are stamped with.
         """
         span = timeframe.duration
         if span <= dt.timedelta(0):
             d = self.date(t)
+            if timeframe is Timeframe.W1:
+                d -= dt.timedelta(days=d.weekday())
             return dt.datetime(d.year, d.month, d.day, tzinfo=self.tz)
         opening = self.open(t)
         local = t.astimezone(self.tz)
@@ -100,22 +106,27 @@ class Session:
         """Zero-based position of ``t``'s bar within its session.
 
         This is what a volume profile and a relative-volume calculation index
-        on. Returns ``-1`` for a timestamp after the close.
+        on. Returns ``-1`` for a timestamp at or after the close: bars are
+        half-open, so the closing instant belongs to no session bar, and indexing
+        a post-close print would add a slot :meth:`slot_count` does not count.
         """
         span = timeframe.duration
         if span <= dt.timedelta(0):
             return 0
-        start = self.bucket_start(t, timeframe)
-        if start > self.close(t):
+        if t >= self.close(t):
             return -1
-        return (start - self.open(t)) // span
+        return (self.bucket_start(t, timeframe) - self.open(t)) // span
 
     def slot_count(self, timeframe: Timeframe) -> int:
-        """How many whole bars of this size fit in one regular session."""
+        """How many bars of this size one regular session holds.
+
+        A final partial bar counts: NSE's 60-minute chain ends with a 15:15-15:30
+        bar, and every index :meth:`slot_index` returns is below this count.
+        """
         span = timeframe.duration
         if span <= dt.timedelta(0):
             return 1
-        return dt.timedelta(minutes=self.close_minute - self.open_minute) // span
+        return -(-dt.timedelta(minutes=self.close_minute - self.open_minute) // span)
 
 
 def nse() -> Session:

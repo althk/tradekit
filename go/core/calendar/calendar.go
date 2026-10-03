@@ -110,15 +110,17 @@ func (s Session) IsWeekday(t time.Time) bool {
 }
 
 // InSession reports whether t falls inside the regular trading window,
-// inclusive of both boundaries. It does not consult holidays: pair it with
-// TradingDay when that matters.
+// inclusive of both boundary instants. It does not consult holidays: pair it
+// with TradingDay when that matters.
+//
+// The comparison is on instants, not on whole minutes: 15:30:45 is after a
+// 15:30 close, and treating the closing minute as open would admit a print
+// from the post-close session.
 func (s Session) InSession(t time.Time) bool {
 	if !s.IsWeekday(t) {
 		return false
 	}
-	local := t.In(s.Location)
-	mins := local.Hour()*60 + local.Minute()
-	return mins >= s.OpenMinute && mins <= s.CloseMinute
+	return !t.Before(s.Open(t)) && !t.After(s.Close(t))
 }
 
 // BucketStart aligns a timestamp to the start of the bar containing it,
@@ -131,10 +133,14 @@ func (s Session) InSession(t time.Time) bool {
 // the open, so a pre-market print lands in the first bar rather than in a
 // phantom bar of its own.
 //
-// A non-intraday timeframe returns the session date, which is the correct
-// bucket for a daily bar.
+// A daily timeframe returns the session date, and a weekly one the Monday of
+// t's week, which are the buckets daily and weekly bars are stamped with.
 func (s Session) BucketStart(t time.Time, tf domain.Timeframe) time.Time {
 	d := tf.Duration()
+	if tf == domain.W1 {
+		date := s.Date(t)
+		return date.AddDate(0, 0, -((int(date.Weekday()) + 6) % 7))
+	}
 	if d <= 0 {
 		return s.Date(t)
 	}
@@ -149,28 +155,30 @@ func (s Session) BucketStart(t time.Time, tf domain.Timeframe) time.Time {
 
 // SlotIndex returns the zero-based position of t's bar within its session,
 // which is what a volume profile and a relative-volume calculation index on.
-// It returns -1 for a timestamp after the close.
+// It returns -1 for a timestamp at or after the close. Bars are half-open, so
+// the closing instant belongs to no session bar, and indexing a post-close
+// print would add a slot that SlotCount does not count.
 func (s Session) SlotIndex(t time.Time, tf domain.Timeframe) int {
 	d := tf.Duration()
 	if d <= 0 {
 		return 0
 	}
-	start := s.BucketStart(t, tf)
-	if start.After(s.Close(t)) {
+	if !t.Before(s.Close(t)) {
 		return -1
 	}
-	return int(start.Sub(s.Open(t)) / d)
+	return int(s.BucketStart(t, tf).Sub(s.Open(t)) / d)
 }
 
-// SlotCount returns how many whole bars of the given timeframe fit in one
-// regular session.
+// SlotCount returns how many bars of the given timeframe one regular session
+// holds, counting a final partial bar: NSE's 60-minute chain ends with a
+// 15:15-15:30 bar, and every index SlotIndex returns is below this count.
 func (s Session) SlotCount(tf domain.Timeframe) int {
 	d := tf.Duration()
 	if d <= 0 {
 		return 1
 	}
 	span := time.Duration(s.CloseMinute-s.OpenMinute) * time.Minute
-	return int(span / d)
+	return int((span + d - 1) / d)
 }
 
 // Calendar combines a session with a holiday source.

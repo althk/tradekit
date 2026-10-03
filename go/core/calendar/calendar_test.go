@@ -209,3 +209,55 @@ func TestHolidayLookupSurvivesDistinctLocationPointers(t *testing.T) {
 		t.Error("holiday lookup missed across distinct Location pointers")
 	}
 }
+
+func TestSlotIndexRefusesABarAtTheClose(t *testing.T) {
+	s := NSE()
+	// NSE prints after 15:30; a tick there must not open a 76th 5-minute
+	// slot that SlotCount says does not exist.
+	for _, tc := range []struct {
+		at time.Time
+		tf domain.Timeframe
+	}{
+		{at(t, 15, 30), domain.M5},
+		{at(t, 15, 44), domain.M15},
+		{at(t, 16, 0), domain.M60},
+	} {
+		if got := s.SlotIndex(tc.at, tc.tf); got != -1 {
+			t.Errorf("SlotIndex(%s, %s) = %d, want -1 for a bar starting at or after the close", tc.at.Format("15:04"), tc.tf, got)
+		}
+	}
+}
+
+func TestSlotCountIncludesThePartialLastBar(t *testing.T) {
+	s := NSE()
+	last := s.SlotIndex(at(t, 15, 20), domain.M60)
+	if count := s.SlotCount(domain.M60); last != 6 || count != 7 {
+		t.Errorf("last M60 index %d, count %d; want 6 and 7: every index must be below the count", last, count)
+	}
+	if count := s.SlotCount(domain.M5); count != 75 {
+		t.Errorf("SlotCount(M5) = %d, want 75", count)
+	}
+}
+
+func TestBucketStartWeeklyIsMonday(t *testing.T) {
+	s := NSE()
+	thursday := at(t, 11, 0) // 2026-01-15
+	want := time.Date(2026, 1, 12, 0, 0, 0, 0, ist(t))
+	if got := s.BucketStart(thursday, domain.W1); !got.Equal(want) {
+		t.Errorf("BucketStart(W1) = %s, want Monday %s: a weekly bucket that is a day makes weekly bars daily", got, want)
+	}
+	sunday := time.Date(2026, 1, 18, 9, 0, 0, 0, ist(t))
+	if got := s.BucketStart(sunday, domain.W1); !got.Equal(want) {
+		t.Errorf("BucketStart(W1) for Sunday = %s, want the preceding Monday %s", got, want)
+	}
+}
+
+func TestInSessionExcludesTheClosingMinute(t *testing.T) {
+	s := NSE()
+	if !s.InSession(at(t, 15, 30)) {
+		t.Error("15:30:00 is the closing instant and should be in session")
+	}
+	if s.InSession(at(t, 15, 30).Add(45 * time.Second)) {
+		t.Error("15:30:45 is after the close and must not be in session")
+	}
+}
