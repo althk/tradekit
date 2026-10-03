@@ -23,10 +23,12 @@ package paper
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -59,11 +61,19 @@ type Slippage struct {
 	Ticks int
 }
 
+// fractionEpsilon absorbs binary floating-point error in price times fraction,
+// so that a slippage that is exactly a whole number of paise (100.00 at 5 bps
+// is 5 paise) is not pushed to the next paisa by a representation error.
+const fractionEpsilon = 1e-9
+
 // apply moves price against the side by the configured amount.
 func (s Slippage) apply(price money.Money, side domain.Side, tick money.Money) money.Money {
 	adjusted := price
-	if s.Fraction != 0 {
-		delta := price.MulFraction(s.Fraction)
+	if s.Fraction > 0 {
+		// Rounded up rather than to nearest: five basis points on a
+		// nine-rupee stock is under half a paisa, and rounding it away
+		// would leave the fill with no slippage at all.
+		delta := money.Money(math.Ceil(float64(price)*s.Fraction - fractionEpsilon))
 		if side == domain.Buy {
 			adjusted += delta
 		} else {
@@ -115,14 +125,25 @@ type position struct {
 	Strategy     string               `json:"strategy"`
 }
 
-// resting is an order waiting for a price: a limit entry or a protective leg.
+// resting is an order waiting for a price: a limit or stop entry, or a
+// protective leg.
 type resting struct {
 	ID       string               `json:"id"`
+	Seq      int                  `json:"seq"`
 	Key      domain.InstrumentKey `json:"key"`
 	Side     domain.Side          `json:"side"`
 	Quantity int                  `json:"quantity"`
-	// Limit fills when price reaches it or better; zero for a protective.
+	// Type is the entry's order type. A stop triggers on the opposite side
+	// of the market to a limit, so the two cannot share one test.
+	Type domain.OrderType `json:"type"`
+	// Limit is the worst price a limit or stop-limit entry accepts; zero
+	// for a stop or a protective.
 	Limit money.Money `json:"limit"`
+	// Trigger is a stop or stop-limit entry's activation price.
+	Trigger money.Money `json:"trigger"`
+	// Triggered marks a stop-limit whose trigger has traded; from then on
+	// it behaves as a plain limit.
+	Triggered bool `json:"triggered"`
 	// Stop and Target are the protective legs; zero when unset.
 	Stop    money.Money    `json:"stop"`
 	Target  money.Money    `json:"target"`
@@ -143,6 +164,7 @@ type Broker struct {
 	cash      money.Money
 	realized  money.Money
 	seq       int
+	session   string
 	lastPrice map[domain.InstrumentKey]money.Money
 	lastAt    map[domain.InstrumentKey]time.Time
 	lastBar   map[domain.InstrumentKey]domain.Candle
@@ -160,6 +182,7 @@ func New(opts Options) *Broker {
 	return &Broker{
 		opts:      opts,
 		cash:      opts.Cash,
+		session:   sessionTag(),
 		lastPrice: map[domain.InstrumentKey]money.Money{},
 		lastAt:    map[domain.InstrumentKey]time.Time{},
 		lastBar:   map[domain.InstrumentKey]domain.Candle{},
@@ -170,9 +193,24 @@ func New(opts Options) *Broker {
 }
 
 // nextID mints a paper order id. The caller must hold the lock.
+//
+// The session tag keeps ids unique across simulator instances: a paper process
+// that restarts would otherwise mint PAPER-ORD-1 again, and a store keyed on
+// order id would merge today's order into yesterday's row.
 func (b *Broker) nextID(kind string) string {
 	b.seq++
-	return OrderIDPrefix + kind + "-" + strconv.Itoa(b.seq)
+	return fmt.Sprintf("%s%s-%s-%06d", OrderIDPrefix, b.session, kind, b.seq)
+}
+
+// sessionTag returns a short random tag identifying one simulator instance.
+func sessionTag() string {
+	var raw [4]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		// crypto/rand does not fail on supported platforms; a fixed tag
+		// still yields valid, if not cross-run unique, ids.
+		return "00000000"
+	}
+	return hex.EncodeToString(raw[:])
 }
 
 // tickOf returns an instrument's tick size, or zero when unknown.
@@ -208,7 +246,7 @@ func (b *Broker) Account(context.Context) (domain.Account, error) {
 	defer b.mu.Unlock()
 	return domain.Account{
 		Equity:    b.equityLocked(),
-		Available: b.cash,
+		Available: max(b.buyingPowerLocked(), 0),
 		Used:      b.exposureLocked(),
 	}, nil
 }
@@ -266,19 +304,24 @@ func (b *Broker) PlaceOrder(_ context.Context, req domain.OrderRequest) (domain.
 			return *order, err
 		}
 	case domain.Limit, domain.Stop, domain.StopLimit:
-		trigger := req.LimitPrice
-		if req.Type != domain.Limit {
-			trigger = req.TriggerPrice
-		}
-		if trigger <= 0 {
+		needLimit := req.Type != domain.Stop
+		needTrigger := req.Type != domain.Limit
+		if (needLimit && req.LimitPrice <= 0) || (needTrigger && req.TriggerPrice <= 0) {
 			order.Status = domain.StatusRejected
 			order.Message = "a resting order needs a price"
 			return *order, fmt.Errorf("%w: a resting order needs a price", ErrRejected)
 		}
-		b.resting[id] = &resting{
-			ID: id, Key: req.Key, Side: req.Side, Quantity: req.Quantity,
-			Limit: trigger, Product: req.Product, Tag: req.Tag,
+		r := &resting{
+			ID: id, Seq: b.seq, Key: req.Key, Side: req.Side, Quantity: req.Quantity,
+			Type: req.Type, Product: req.Product, Tag: req.Tag,
 		}
+		if needLimit {
+			r.Limit = req.LimitPrice
+		}
+		if needTrigger {
+			r.Trigger = req.TriggerPrice
+		}
+		b.resting[id] = r
 	default:
 		order.Status = domain.StatusRejected
 		order.Message = "unsupported order type " + string(req.Type)
@@ -412,7 +455,7 @@ func (b *Broker) PlaceProtective(_ context.Context, p domain.Protective) (string
 	}
 	id := b.nextID("GTT")
 	b.resting[id] = &resting{
-		ID: id, Key: p.Key, Side: p.Side, Quantity: p.Quantity,
+		ID: id, Seq: b.seq, Key: p.Key, Side: p.Side, Quantity: p.Quantity,
 		Stop: p.Stop, Target: p.Target, Product: p.Product, Protective: true,
 	}
 	return id, nil
@@ -506,6 +549,12 @@ func (b *Broker) OnBar(c domain.Candle) {
 	b.observeLocked(c.Key, c.Close, c.Start)
 	b.lastBar[c.Key] = c
 	b.matchLocked(c.Key, bar{open: c.Open, high: c.High, low: c.Low, close: c.Close, at: c.Start})
+	// Fills the bar triggered are stamped at its start; an order placed after
+	// seeing the bar's close is placed at its end, which is when that close
+	// existed. A daily bar has no fixed end here and keeps its start.
+	if d := c.Timeframe.Duration(); d > 0 {
+		b.lastAt[c.Key] = c.Start.Add(d)
+	}
 }
 
 func (b *Broker) observeLocked(key domain.InstrumentKey, price money.Money, at time.Time) {
@@ -525,17 +574,25 @@ func (bb bar) touched(level money.Money) bool {
 }
 
 // matchLocked fills every resting order this bar triggers.
+//
+// Entries are matched before protectives, so a position opened inside this bar
+// has its stop tested against the same bar. That is the pessimistic reading:
+// the range that filled the entry may also have run through the stop.
 func (b *Broker) matchLocked(key domain.InstrumentKey, bb bar) {
-	for _, r := range b.restingFor(key) {
-		if r.Protective {
-			b.matchProtectiveLocked(r, bb)
-			continue
+	pending := b.restingFor(key)
+	for _, r := range pending {
+		if !r.Protective {
+			b.matchEntryLocked(r, bb)
 		}
-		b.matchEntryLocked(r, bb)
+	}
+	for _, r := range pending {
+		if _, live := b.resting[r.ID]; live && r.Protective {
+			b.matchProtectiveLocked(r, bb)
+		}
 	}
 }
 
-// restingFor returns this instrument's resting orders in a stable order, so a
+// restingFor returns this instrument's resting orders in placement order, so a
 // bar that triggers several of them behaves identically on every run.
 func (b *Broker) restingFor(key domain.InstrumentKey) []*resting {
 	var out []*resting
@@ -544,32 +601,28 @@ func (b *Broker) restingFor(key domain.InstrumentKey) []*resting {
 			out = append(out, r)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out
+}
+
+// entryPendingLocked reports whether an entry order for key is still resting.
+func (b *Broker) entryPendingLocked(key domain.InstrumentKey) bool {
+	for _, r := range b.resting {
+		if r.Key == key && !r.Protective {
+			return true
+		}
+	}
+	return false
 }
 
 // matchEntryLocked fills a resting entry when the bar reaches its price.
 //
-// A bar that opens through the limit fills at the open, not at the limit: the
-// price was already better than asked for, and pretending otherwise would
-// under-report the entry.
+// A bar that opens through the price fills at the open, not at the order's
+// price. For a limit the open was already better than asked for; for a stop the
+// market gapped past the trigger, and a stop gets the gap, not the level.
 func (b *Broker) matchEntryLocked(r *resting, bb bar) {
-	crossed := false
-	trigger := r.Limit
-	if r.Side == domain.Buy {
-		if bb.open <= r.Limit {
-			crossed, trigger = true, bb.open
-		} else if bb.low <= r.Limit {
-			crossed = true
-		}
-	} else {
-		if bb.open >= r.Limit {
-			crossed, trigger = true, bb.open
-		} else if bb.high >= r.Limit {
-			crossed = true
-		}
-	}
-	if !crossed {
+	price, ok := r.entryFill(bb)
+	if !ok {
 		return
 	}
 	order := b.orders[r.ID]
@@ -577,7 +630,83 @@ func (b *Broker) matchEntryLocked(r *resting, bb bar) {
 	if order == nil {
 		return
 	}
-	_ = b.fillLocked(order, trigger, bb.at)
+	// An entry that has become unaffordable by the time it triggers is
+	// rejected, as a market order would be; its status carries the outcome.
+	_ = b.fillLocked(order, price, bb.at)
+}
+
+// entryFill returns the price a resting entry fills at in this bar, if any.
+//
+// It records a stop-limit's activation as a side effect: a triggered stop-limit
+// that cannot fill yet keeps resting as a plain limit.
+func (r *resting) entryFill(bb bar) (money.Money, bool) {
+	switch r.Type {
+	case domain.Stop:
+		return stopFill(r.Side, r.Trigger, bb)
+	case domain.StopLimit:
+		if r.Triggered {
+			return limitFill(r.Side, r.Limit, bb)
+		}
+		at, ok := stopFill(r.Side, r.Trigger, bb)
+		if !ok {
+			return 0, false
+		}
+		r.Triggered = true
+		if at == bb.open {
+			// Activated on the open, so the whole bar traded after the
+			// trigger and the limit can be tested against all of it.
+			return limitFill(r.Side, r.Limit, bb)
+		}
+		// Activated inside the bar: only the trigger price is known to have
+		// traded after activation; the rest of the range may have come first.
+		if (r.Side == domain.Buy && at <= r.Limit) || (r.Side == domain.Sell && at >= r.Limit) {
+			return at, true
+		}
+		return 0, false
+	default:
+		return limitFill(r.Side, r.Limit, bb)
+	}
+}
+
+// limitFill tests a limit: a buy fills once price falls to its limit or below.
+func limitFill(side domain.Side, limit money.Money, bb bar) (money.Money, bool) {
+	if side == domain.Buy {
+		switch {
+		case bb.open <= limit:
+			return bb.open, true
+		case bb.low <= limit:
+			return limit, true
+		}
+		return 0, false
+	}
+	switch {
+	case bb.open >= limit:
+		return bb.open, true
+	case bb.high >= limit:
+		return limit, true
+	}
+	return 0, false
+}
+
+// stopFill tests a stop entry, the mirror image of a limit: a buy stop
+// activates once price rises to its trigger or above.
+func stopFill(side domain.Side, trigger money.Money, bb bar) (money.Money, bool) {
+	if side == domain.Buy {
+		switch {
+		case bb.open >= trigger:
+			return bb.open, true
+		case bb.high >= trigger:
+			return trigger, true
+		}
+		return 0, false
+	}
+	switch {
+	case bb.open <= trigger:
+		return bb.open, true
+	case bb.low <= trigger:
+		return trigger, true
+	}
+	return 0, false
 }
 
 // matchProtectiveLocked resolves a resting stop and target against the bar.
@@ -588,8 +717,12 @@ func (b *Broker) matchEntryLocked(r *resting, bb bar) {
 func (b *Broker) matchProtectiveLocked(r *resting, bb bar) {
 	p, ok := b.positions[r.Key]
 	if !ok {
-		// The position is already gone; the protective is stale.
-		delete(b.resting, r.ID)
+		// A protective placed alongside an entry that has not filled yet
+		// waits for it. One with neither a position nor a pending entry is
+		// stale.
+		if !b.entryPendingLocked(r.Key) {
+			delete(b.resting, r.ID)
+		}
 		return
 	}
 	long := p.Quantity > 0
@@ -647,11 +780,19 @@ func (b *Broker) fillLocked(order *domain.Order, raw money.Money, at time.Time) 
 	existing := b.positions[req.Key]
 	closing := existing != nil && sideOf(existing.Quantity) != req.Side
 
-	if !closing && !b.affordableLocked(price, req.Quantity) {
+	// A reversal opens whatever exceeds the held quantity on the other side,
+	// and that new position needs the buying power the closed one frees up.
+	opening, freed := req.Quantity, money.Zero
+	if closing {
+		held := abs(existing.Quantity)
+		opening = max(req.Quantity-held, 0)
+		freed = existing.AveragePrice.Mul(int64(min(req.Quantity, held)))
+	}
+	if opening > 0 && !b.affordableLocked(price, opening, freed) {
 		order.Status = domain.StatusRejected
 		order.Message = "insufficient buying power"
 		return fmt.Errorf("%w: insufficient buying power for %d of %s at %s",
-			ErrRejected, req.Quantity, req.Key, price)
+			ErrRejected, opening, req.Key, price)
 	}
 
 	order.Status = domain.StatusComplete
@@ -675,11 +816,16 @@ func (b *Broker) fillLocked(order *domain.Order, raw money.Money, at time.Time) 
 	return nil
 }
 
-// affordableLocked reports whether the account can carry a new position.
-func (b *Broker) affordableLocked(price money.Money, qty int) bool {
+// affordableLocked reports whether the account can carry a new position, after
+// releasing freed of existing exposure that the same order closes.
+func (b *Broker) affordableLocked(price money.Money, qty int, freed money.Money) bool {
 	notional := price.Mul(int64(qty))
-	buyingPower := b.equityLocked().MulFraction(b.opts.Leverage) - b.exposureLocked()
-	return notional <= buyingPower
+	return notional <= b.buyingPowerLocked()+freed
+}
+
+// buyingPowerLocked is leveraged equity less the exposure already carried.
+func (b *Broker) buyingPowerLocked() money.Money {
+	return b.equityLocked().MulFraction(b.opts.Leverage) - b.exposureLocked()
 }
 
 // openLocked adds to or creates a position.
@@ -698,10 +844,17 @@ func (b *Broker) openLocked(req domain.OrderRequest, qty int, price money.Money,
 		return
 	}
 	// Averaging into an existing position: the new average is the
-	// quantity-weighted mean, which is what the broker would report.
+	// quantity-weighted mean, which is what the broker would report. A
+	// fractional paisa rounds against the position (a long's cost up, a
+	// short's proceeds down) so the rounding never flatters the P&L.
 	held := abs(p.Quantity)
-	total := held + qty
-	p.AveragePrice = money.Money((int64(p.AveragePrice)*int64(held) + int64(price)*int64(qty)) / int64(total))
+	total := int64(held + qty)
+	sum := int64(p.AveragePrice)*int64(held) + int64(price)*int64(qty)
+	avg := sum / total
+	if sum%total != 0 && p.Quantity > 0 {
+		avg++
+	}
+	p.AveragePrice = money.Money(avg)
 	p.Quantity += signed
 }
 

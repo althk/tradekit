@@ -382,6 +382,66 @@ func TestFillModelParity(t *testing.T) {
 	}
 }
 
+// TestEntryFillParity drives resting limit, stop and stop-limit entries
+// through the shared cases the Python simulator also runs.
+func TestEntryFillParity(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "testdata", "parity.json"))
+	if err != nil {
+		t.Fatalf("reading the shared fixture: %v", err)
+	}
+	var f struct {
+		EntryFills struct {
+			Cases []struct {
+				Name      string           `json:"name"`
+				Side      string           `json:"side"`
+				Type      string           `json:"type"`
+				Limit     money.Money      `json:"limit"`
+				Trigger   money.Money      `json:"trigger"`
+				Bars      [][4]money.Money `json:"bars"`
+				WantPrice money.Money      `json:"want_price"`
+			} `json:"cases"`
+		} `json:"entry_fills"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("parsing the shared fixture: %v", err)
+	}
+	if len(f.EntryFills.Cases) == 0 {
+		t.Fatal("no entry fill cases found in the shared fixture")
+	}
+
+	key := domain.InstrumentKey{Exchange: "NSE", Symbol: "X"}
+	placedAt := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	for _, c := range f.EntryFills.Cases {
+		b := paper.New(paper.Options{Cash: money.MustParse("10000000.00")})
+		b.OnTick(key, 10000, placedAt)
+		order, err := b.PlaceOrder(ctx, domain.OrderRequest{
+			Key: key, Side: domain.Side(c.Side), Quantity: 1, Type: domain.OrderType(c.Type),
+			Product: domain.CNC, LimitPrice: c.Limit, TriggerPrice: c.Trigger,
+		})
+		if err != nil {
+			t.Errorf("%s: placing: %v", c.Name, err)
+			continue
+		}
+		for i, bar := range c.Bars {
+			b.OnBar(domain.Candle{
+				Key: key, Timeframe: domain.D1, Start: placedAt.AddDate(0, 0, i+1),
+				Open: bar[0], High: bar[1], Low: bar[2], Close: bar[3], Volume: 1000,
+			})
+		}
+		got, _ := b.OrderStatus(ctx, order.ID)
+		if c.WantPrice == 0 {
+			if got.Status != domain.StatusOpen {
+				t.Errorf("%s: status = %s, want still resting", c.Name, got.Status)
+			}
+			continue
+		}
+		if got.Status != domain.StatusComplete || got.AveragePrice != c.WantPrice {
+			t.Errorf("%s: got %s at %d, want complete at %d", c.Name, got.Status, got.AveragePrice, c.WantPrice)
+		}
+	}
+}
+
 func TestOptionsParity(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "testdata", "parity.json"))
 	if err != nil {

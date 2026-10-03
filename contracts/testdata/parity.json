@@ -432,6 +432,33 @@
       }
     ]
   },
+  "entry_fills": {
+    "_comment": [
+      "Resting entry orders against a sequence of bars. The market is at 10000",
+      "when the order is placed. bars are [open, high, low, close]; want_price",
+      "is the fill, 0 meaning the order is still resting after the last bar.",
+      "A limit buys at or below its price, a stop buys at or above its trigger;",
+      "either fills at the open when the bar opens through the level."
+    ],
+    "cases": [
+      {"name": "buy limit below the market fills at the limit", "side": "buy", "type": "limit", "limit": 9800, "trigger": 0,
+       "bars": [[10000, 10100, 9700, 9900]], "want_price": 9800},
+      {"name": "buy limit gapped through fills at the open", "side": "buy", "type": "limit", "limit": 9800, "trigger": 0,
+       "bars": [[9600, 9900, 9500, 9700]], "want_price": 9600},
+      {"name": "buy stop above the market does not fill below its trigger", "side": "buy", "type": "stop", "limit": 0, "trigger": 11000,
+       "bars": [[10000, 10500, 9500, 10200]], "want_price": 0},
+      {"name": "buy stop fills at the trigger once price rises to it", "side": "buy", "type": "stop", "limit": 0, "trigger": 11000,
+       "bars": [[10000, 10500, 9500, 10200], [10400, 11200, 10300, 11100]], "want_price": 11000},
+      {"name": "buy stop gapped through fills at the open", "side": "buy", "type": "stop", "limit": 0, "trigger": 11000,
+       "bars": [[11500, 11800, 11400, 11600]], "want_price": 11500},
+      {"name": "sell stop below the market fills at the trigger", "side": "sell", "type": "stop", "limit": 0, "trigger": 9500,
+       "bars": [[10000, 10400, 9600, 10100], [9700, 9800, 9300, 9400]], "want_price": 9500},
+      {"name": "buy stop-limit triggered inside the bar fills at the trigger", "side": "buy", "type": "stop_limit", "limit": 11100, "trigger": 11000,
+       "bars": [[10500, 11300, 10400, 11200]], "want_price": 11000},
+      {"name": "buy stop-limit gapped above its limit rests, then fills as a limit", "side": "buy", "type": "stop_limit", "limit": 11100, "trigger": 11000,
+       "bars": [[11500, 11800, 11300, 11600], [11300, 11400, 11050, 11150]], "want_price": 11100}
+    ]
+  },
   "upstox": {
     "_comment": [
       "Upstox adapter mapping, run by go/upstox/parity_test.go and",

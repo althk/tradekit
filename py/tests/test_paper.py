@@ -477,3 +477,138 @@ def test_concurrent_ticks_and_orders() -> None:
     thread.join()
 
     assert b.positions()[0].quantity == 50, "every order placed must be in the book exactly once"
+
+
+# --- stop entries, bracket ordering and rounding ---
+
+
+def stop_entry(side: Side, qty: int, trigger: str) -> OrderRequest:
+    return OrderRequest(
+        key=KEY, side=side, quantity=qty, type=OrderType.STOP, trigger_price=rs(trigger), product=Product.CNC
+    )
+
+
+def test_buy_stop_waits_for_price_to_rise_to_the_trigger() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    order = b.place_order(stop_entry(Side.BUY, 10, "110.00"))
+
+    b.on_bar(day_bar(2, "100.00", "105.00", "95.00", "102.00"))
+    assert b.order_status(order.id).status is OrderStatus.OPEN, "a buy stop was matched as a limit"
+
+    b.on_bar(day_bar(3, "104.00", "112.00", "103.00", "111.00"))
+    got = b.order_status(order.id)
+    assert got.status is OrderStatus.COMPLETE
+    assert got.average_price == rs("110.00"), "want the fill at the trigger"
+
+
+def test_buy_stop_gapping_through_fills_at_the_open() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    order = b.place_order(stop_entry(Side.BUY, 10, "110.00"))
+    b.on_bar(day_bar(2, "115.00", "118.00", "114.00", "116.00"))
+    assert b.order_status(order.id).average_price == rs("115.00"), "a stop gets the gap, not the level"
+
+
+def test_sell_stop_waits_for_price_to_fall_to_the_trigger() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    order = b.place_order(stop_entry(Side.SELL, 10, "95.00"))
+    b.on_bar(day_bar(2, "100.00", "104.00", "96.00", "101.00"))
+    assert b.order_status(order.id).status is OrderStatus.OPEN
+    b.on_bar(day_bar(3, "97.00", "98.00", "93.00", "94.00"))
+    assert b.order_status(order.id).average_price == rs("95.00")
+
+
+def test_stop_limit_honours_its_limit_after_a_gap() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    req = OrderRequest(
+        key=KEY,
+        side=Side.BUY,
+        quantity=10,
+        type=OrderType.STOP_LIMIT,
+        trigger_price=rs("110.00"),
+        limit_price=rs("111.00"),
+    )
+    order = b.place_order(req)
+
+    b.on_bar(day_bar(2, "115.00", "118.00", "113.00", "116.00"))
+    assert b.order_status(order.id).status is OrderStatus.OPEN, "a stop-limit must not fill above its limit"
+    b.on_bar(day_bar(3, "113.00", "114.00", "110.50", "111.50"))
+    got = b.order_status(order.id)
+    assert got.status is OrderStatus.COMPLETE
+    assert got.average_price == rs("111.00")
+
+
+def test_stop_limit_needs_both_prices() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    req = OrderRequest(key=KEY, side=Side.BUY, quantity=10, type=OrderType.STOP_LIMIT, trigger_price=rs("110.00"))
+    with pytest.raises(RejectedError):
+        b.place_order(req)
+
+
+def test_order_ids_are_unique_across_simulators() -> None:
+    first, second = sim(), sim()
+    first.on_tick(KEY, rs("100.00"), at(1, 10))
+    second.on_tick(KEY, rs("100.00"), at(1, 10))
+    a = first.place_order(buy(1))
+    b = second.place_order(buy(1))
+    assert a.id != b.id, "a restarted paper session would overwrite yesterday's stored order"
+
+
+def test_bracket_stop_survives_until_its_entry_fills() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    b.place_order(OrderRequest(key=KEY, side=Side.BUY, quantity=10, type=OrderType.LIMIT, limit_price=rs("98.00")))
+    b.place_protective(Protective(key=KEY, side=Side.SELL, quantity=10, stop=rs("95.00")))
+
+    b.on_bar(day_bar(2, "100.00", "101.00", "99.00", "100.50"))
+    assert len(b.list_protective()) == 1, "the stop was dropped before its entry filled"
+
+    b.on_bar(day_bar(3, "99.00", "99.50", "94.00", "96.00"))
+    trades = b.trades()
+    assert len(trades) == 1
+    assert trades[0].exit_reason is ExitReason.STOP, "the stop must be tested against the fill bar"
+    assert (trades[0].entry_price, trades[0].exit_price) == (rs("98.00"), rs("95.00"))
+
+
+def test_averaging_rounds_against_the_long() -> None:
+    b = sim()
+    b.on_tick(KEY, rs("1.00"), at(1, 10))
+    b.place_order(buy(1))
+    b.on_tick(KEY, rs("1.01"), at(1, 11))
+    b.place_order(buy(2))
+    assert b.positions()[0].average_price == 101, "rounding must work against the position"
+
+
+def test_sub_paisa_slippage_is_not_rounded_away() -> None:
+    b = Broker(Options(cash=rs("1000000.00"), slippage=Slippage(fraction=0.0005)))
+    b.on_tick(KEY, rs("9.00"), at(1, 10))
+    assert b.place_order(buy(1)).average_price == 901
+
+
+def test_whole_paisa_slippage_is_exact() -> None:
+    b = Broker(Options(cash=rs("1000000.00"), slippage=Slippage(fraction=0.0005)))
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    assert b.place_order(buy(1)).average_price == rs("100.05"), "float error must not add a paisa"
+
+
+def test_reversal_remainder_needs_buying_power() -> None:
+    b = Broker(Options(cash=rs("1000.00")))
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    b.place_order(buy(5))
+    with pytest.raises(RejectedError):
+        b.place_order(sell(1000))
+    positions = b.positions()
+    assert len(positions) == 1
+    assert positions[0].quantity == 5, "a rejected order must leave the long untouched"
+    b.place_order(sell(10))
+
+
+def test_available_excludes_open_exposure() -> None:
+    b = Broker(Options(cash=rs("1000.00")))
+    b.on_tick(KEY, rs("100.00"), at(1, 10))
+    b.place_order(buy(6))
+    assert b.account().available == rs("400.00"), "capital tied up in a position is not available"

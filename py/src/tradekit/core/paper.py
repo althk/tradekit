@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import math
+import secrets
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -79,6 +81,12 @@ every real bar, so such an order can never be mistaken for a recent one.
 """
 
 
+_FRACTION_EPSILON = 1e-9
+"""Absorbs binary floating-point error in price times fraction, so a slippage
+that is exactly a whole number of paise (100.00 at 5 bps is 5 paise) is not
+pushed to the next paisa by a representation error."""
+
+
 class RejectedError(Exception):
     """An order the simulator refused.
 
@@ -104,8 +112,11 @@ class Slippage:
     def apply(self, price: Money, side: Side, tick: Money) -> Money:
         """Move ``price`` against ``side`` by the configured amount."""
         adjusted = int(price)
-        if self.fraction:
-            delta = int(money.mul_fraction(price, self.fraction))
+        if self.fraction > 0:
+            # Rounded up rather than to nearest: five basis points on a
+            # nine-rupee stock is under half a paisa, and rounding it away
+            # would leave the fill with no slippage at all.
+            delta = math.ceil(int(price) * self.fraction - _FRACTION_EPSILON)
             adjusted += delta if side is Side.BUY else -delta
         if self.ticks and tick > 0:
             delta = int(money.mul(tick, self.ticks))
@@ -158,15 +169,28 @@ class _Position:
 
 @dataclass(slots=True)
 class _Resting:
-    """An order waiting for a price: a limit entry or a protective leg."""
+    """An order waiting for a price: a limit or stop entry, or a protective leg."""
 
     id: str
+    seq: int
     key: InstrumentKey
     side: Side
     quantity: int
 
+    type: OrderType = OrderType.LIMIT
+    """The entry's order type. A stop triggers on the opposite side of the
+    market to a limit, so the two cannot share one test."""
+
     limit: Money = money.ZERO
-    """Fills when the price reaches it or better; zero for a protective."""
+    """The worst price a limit or stop-limit entry accepts; zero for a stop or a
+    protective."""
+
+    trigger: Money = money.ZERO
+    """A stop or stop-limit entry's activation price."""
+
+    triggered: bool = False
+    """Marks a stop-limit whose trigger has traded; from then on it behaves as a
+    plain limit."""
 
     stop: Money = money.ZERO
     target: Money = money.ZERO
@@ -209,6 +233,7 @@ class Broker:
         self._cash: Money = self._opts.cash
         self._realized: Money = money.ZERO
         self._seq = 0
+        self._session = secrets.token_hex(4)
         self._last_price: dict[InstrumentKey, Money] = {}
         self._last_at: dict[InstrumentKey, dt.datetime] = {}
         self._last_bar: dict[InstrumentKey, Candle] = {}
@@ -222,7 +247,11 @@ class Broker:
     def account(self) -> Account:
         """Return the simulated funds view."""
         with self._lock:
-            return Account(equity=self._equity_locked(), available=self._cash, used=self._exposure_locked())
+            return Account(
+                equity=self._equity_locked(),
+                available=Money(max(self._buying_power_locked(), 0)),
+                used=self._exposure_locked(),
+            )
 
     def place_order(self, req: OrderRequest) -> Order:
         """Accept a market or limit order.
@@ -254,17 +283,21 @@ class Broker:
                     raise RejectedError(f"paper: no price seen for {req.key}")
                 self._fill_locked(order, last, now)
             elif req.type in (OrderType.LIMIT, OrderType.STOP, OrderType.STOP_LIMIT):
-                trigger = req.limit_price if req.type is OrderType.LIMIT else req.trigger_price
-                if trigger <= 0:
+                need_limit = req.type is not OrderType.STOP
+                need_trigger = req.type is not OrderType.LIMIT
+                if (need_limit and req.limit_price <= 0) or (need_trigger and req.trigger_price <= 0):
                     order.status = OrderStatus.REJECTED
                     order.message = "a resting order needs a price"
                     raise RejectedError("paper: a resting order needs a price")
                 self._resting[order_id] = _Resting(
                     id=order_id,
+                    seq=self._seq,
                     key=req.key,
                     side=req.side,
                     quantity=req.quantity,
-                    limit=trigger,
+                    type=req.type,
+                    limit=req.limit_price if need_limit else money.ZERO,
+                    trigger=req.trigger_price if need_trigger else money.ZERO,
                     product=req.product,
                     tag=req.tag,
                 )
@@ -381,6 +414,7 @@ class Broker:
             protective_id = self._next_id("GTT")
             self._resting[protective_id] = _Resting(
                 id=protective_id,
+                seq=self._seq,
                 key=p.key,
                 side=p.side,
                 quantity=p.quantity,
@@ -498,6 +532,12 @@ class Broker:
                     at=candle.start,
                 ),
             )
+            # Fills the bar triggered are stamped at its start; an order placed
+            # after seeing the bar's close is placed at its end, which is when
+            # that close existed. A daily bar has no fixed end here.
+            span = candle.timeframe.duration
+            if span > dt.timedelta(0):
+                self._last_at[candle.key] = candle.start + span
 
     # --- inspection ---
 
@@ -524,9 +564,14 @@ class Broker:
     # --- internals; every _locked helper assumes the lock is already held ---
 
     def _next_id(self, kind: str) -> str:
-        """Mint a paper order id."""
+        """Mint a paper order id.
+
+        The session tag keeps ids unique across simulator instances: a paper
+        process that restarts would otherwise mint ``PAPER-ORD-1`` again, and a
+        store keyed on order id would merge today's order into yesterday's row.
+        """
         self._seq += 1
-        return f"{ORDER_ID_PREFIX}{kind}-{self._seq}"
+        return f"{ORDER_ID_PREFIX}{self._session}-{kind}-{self._seq:06d}"
 
     def _tick_of(self, key: InstrumentKey) -> Money:
         """Return an instrument's tick size, or zero when unknown."""
@@ -566,40 +611,43 @@ class Broker:
         self._last_at[key] = at
 
     def _match_locked(self, key: InstrumentKey, bar: _Bar) -> None:
-        """Fill every resting order this bar triggers."""
-        for r in self._resting_for(key):
-            if r.protective:
-                self._match_protective_locked(r, bar)
-            else:
+        """Fill every resting order this bar triggers.
+
+        Entries are matched before protectives, so a position opened inside this
+        bar has its stop tested against the same bar. That is the pessimistic
+        reading: the range that filled the entry may also have run through the
+        stop.
+        """
+        pending = self._resting_for(key)
+        for r in pending:
+            if not r.protective:
                 self._match_entry_locked(r, bar)
+        for r in pending:
+            if r.protective and r.id in self._resting:
+                self._match_protective_locked(r, bar)
 
     def _resting_for(self, key: InstrumentKey) -> list[_Resting]:
-        """Return this instrument's resting orders in a stable order.
+        """Return this instrument's resting orders in placement order.
 
         A bar that triggers several of them must behave identically on every
         run, or a backtest stops being reproducible.
         """
-        return sorted((r for r in self._resting.values() if r.key == key), key=lambda r: r.id)
+        return sorted((r for r in self._resting.values() if r.key == key), key=lambda r: r.seq)
+
+    def _entry_pending_locked(self, key: InstrumentKey) -> bool:
+        """Whether an entry order for ``key`` is still resting."""
+        return any(r.key == key and not r.protective for r in self._resting.values())
 
     def _match_entry_locked(self, r: _Resting, bar: _Bar) -> None:
         """Fill a resting entry when the bar reaches its price.
 
-        A bar that opens through the limit fills at the open, not at the limit:
-        the price was already better than asked for, and pretending otherwise
-        would under-report the entry.
+        A bar that opens through the price fills at the open, not at the order's
+        price. For a limit the open was already better than asked for; for a
+        stop the market gapped past the trigger, and a stop gets the gap, not the
+        level.
         """
-        crossed = False
-        trigger = r.limit
-        if r.side is Side.BUY:
-            if bar.open <= r.limit:
-                crossed, trigger = True, bar.open
-            elif bar.low <= r.limit:
-                crossed = True
-        elif bar.open >= r.limit:
-            crossed, trigger = True, bar.open
-        elif bar.high >= r.limit:
-            crossed = True
-        if not crossed:
+        price = _entry_fill(r, bar)
+        if price is None:
             return
 
         order = self._orders.get(r.id)
@@ -610,7 +658,7 @@ class Broker:
         # is rejected, exactly as a market order would be. There is no caller on
         # this path to raise to; the order's status carries the outcome.
         with contextlib.suppress(RejectedError):
-            self._fill_locked(order, trigger, bar.at)
+            self._fill_locked(order, price, bar.at)
 
     def _match_protective_locked(self, r: _Resting, bar: _Bar) -> None:
         """Resolve a resting stop and target against the bar.
@@ -621,8 +669,11 @@ class Broker:
         """
         p = self._positions.get(r.key)
         if p is None:
-            # The position is already gone; the protective is stale.
-            del self._resting[r.id]
+            # A protective placed alongside an entry that has not filled yet
+            # waits for it. One with neither a position nor a pending entry is
+            # stale.
+            if not self._entry_pending_locked(r.key):
+                del self._resting[r.id]
             return
         long = p.quantity > 0
 
@@ -678,12 +729,17 @@ class Broker:
         existing = self._positions.get(req.key)
         closing = existing is not None and _side_of(existing.quantity) is not req.side
 
-        if not closing and not self._affordable_locked(price, req.quantity):
+        # A reversal opens whatever exceeds the held quantity on the other side,
+        # and that new position needs the buying power the closed one frees up.
+        opening, freed = req.quantity, 0
+        if closing and existing is not None:
+            held = abs(existing.quantity)
+            opening = max(req.quantity - held, 0)
+            freed = int(money.mul(existing.average_price, min(req.quantity, held)))
+        if opening > 0 and not self._affordable_locked(price, opening, freed):
             order.status = OrderStatus.REJECTED
             order.message = "insufficient buying power"
-            raise RejectedError(
-                f"paper: insufficient buying power for {req.quantity} of {req.key} at {money.format(price)}"
-            )
+            raise RejectedError(f"paper: insufficient buying power for {opening} of {req.key} at {money.format(price)}")
 
         order.status = OrderStatus.COMPLETE
         order.filled_quantity = req.quantity
@@ -700,11 +756,17 @@ class Broker:
             return
         self._open_locked(req, req.quantity, price, at)
 
-    def _affordable_locked(self, price: Money, qty: int) -> bool:
-        """Whether the account can carry a new position."""
+    def _affordable_locked(self, price: Money, qty: int, freed: int = 0) -> bool:
+        """Whether the account can carry a new position.
+
+        ``freed`` is existing exposure that the same order closes.
+        """
         notional = int(money.mul(price, qty))
-        buying_power = int(money.mul_fraction(self._equity_locked(), self._opts.leverage))
-        return notional <= buying_power - int(self._exposure_locked())
+        return notional <= self._buying_power_locked() + freed
+
+    def _buying_power_locked(self) -> int:
+        """Leveraged equity less the exposure already carried."""
+        return int(money.mul_fraction(self._equity_locked(), self._opts.leverage)) - int(self._exposure_locked())
 
     def _open_locked(self, req: OrderRequest, qty: int, price: Money, at: dt.datetime) -> None:
         """Add to or create a position."""
@@ -722,11 +784,15 @@ class Broker:
             )
             return
         # Averaging into an existing position: the new average is the
-        # quantity-weighted mean, which is what the broker would report. Prices
-        # are non-negative, so flooring here matches Go's truncating division.
+        # quantity-weighted mean, which is what the broker would report. A
+        # fractional paisa rounds against the position (a long's cost up, a
+        # short's proceeds down) so the rounding never flatters the P&L.
         held = abs(p.quantity)
         total = held + qty
-        p.average_price = Money((int(p.average_price) * held + int(price) * qty) // total)
+        avg, rem = divmod(int(p.average_price) * held + int(price) * qty, total)
+        if rem and p.quantity > 0:
+            avg += 1
+        p.average_price = Money(avg)
         p.quantity += signed
 
     def _close_locked(
@@ -806,6 +872,58 @@ class Broker:
             # A charge that cannot be computed is reported as zero rather than
             # estimated; domain.Trade documents zero as "not computed".
             return money.ZERO
+
+
+def _entry_fill(r: _Resting, bar: _Bar) -> Money | None:
+    """Return the price a resting entry fills at in this bar, if any.
+
+    It records a stop-limit's activation as a side effect: a triggered
+    stop-limit that cannot fill yet keeps resting as a plain limit.
+    """
+    if r.type is OrderType.STOP:
+        return _stop_fill(r.side, r.trigger, bar)
+    if r.type is OrderType.STOP_LIMIT:
+        if r.triggered:
+            return _limit_fill(r.side, r.limit, bar)
+        at = _stop_fill(r.side, r.trigger, bar)
+        if at is None:
+            return None
+        r.triggered = True
+        if at == bar.open:
+            # Activated on the open, so the whole bar traded after the trigger
+            # and the limit can be tested against all of it.
+            return _limit_fill(r.side, r.limit, bar)
+        # Activated inside the bar: only the trigger price is known to have
+        # traded after activation; the rest of the range may have come first.
+        if (r.side is Side.BUY and at <= r.limit) or (r.side is Side.SELL and at >= r.limit):
+            return at
+        return None
+    return _limit_fill(r.side, r.limit, bar)
+
+
+def _limit_fill(side: Side, limit: Money, bar: _Bar) -> Money | None:
+    """Test a limit: a buy fills once price falls to its limit or below."""
+    if side is Side.BUY:
+        if bar.open <= limit:
+            return bar.open
+        return limit if bar.low <= limit else None
+    if bar.open >= limit:
+        return bar.open
+    return limit if bar.high >= limit else None
+
+
+def _stop_fill(side: Side, trigger: Money, bar: _Bar) -> Money | None:
+    """Test a stop entry, the mirror image of a limit.
+
+    A buy stop activates once price rises to its trigger or above.
+    """
+    if side is Side.BUY:
+        if bar.open >= trigger:
+            return bar.open
+        return trigger if bar.high >= trigger else None
+    if bar.open <= trigger:
+        return bar.open
+    return trigger if bar.low <= trigger else None
 
 
 def _side_of(quantity: int) -> Side:

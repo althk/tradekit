@@ -20,6 +20,7 @@ from tradekit.core.domain import (
     ExitReason,
     InstrumentKey,
     OrderRequest,
+    OrderStatus,
     OrderType,
     Product,
     Protective,
@@ -223,6 +224,48 @@ def test_fills(data: dict[str, Any]) -> None:
         assert len(trades) == 1, case["name"]
         assert trades[0].exit_reason == ExitReason(case["want_reason"]), case["name"]
         assert trades[0].exit_price == case["want_price"], case["name"]
+
+
+def test_entry_fills(data: dict[str, Any]) -> None:
+    """Resting limit, stop and stop-limit entries, run by ``go/core/parity`` too."""
+    key = InstrumentKey("NSE", "X")
+    placed_at = dt.datetime(2026, 1, 1, 10, 0, tzinfo=dt.UTC)
+    cases = data["entry_fills"]["cases"]
+    assert cases, "no entry fill cases found in the shared fixture"
+
+    for case in cases:
+        b = Broker(Options(cash=money.parse("10000000.00")))
+        b.on_tick(key, Money(10000), placed_at)
+        order = b.place_order(
+            OrderRequest(
+                key=key,
+                side=Side(case["side"]),
+                quantity=1,
+                type=OrderType(case["type"]),
+                product=Product.CNC,
+                limit_price=Money(case["limit"]),
+                trigger_price=Money(case["trigger"]),
+            )
+        )
+        for i, (o, h, low, c) in enumerate(case["bars"]):
+            b.on_bar(
+                Candle(
+                    key=key,
+                    timeframe=Timeframe.D1,
+                    start=placed_at + dt.timedelta(days=i + 1),
+                    open=Money(o),
+                    high=Money(h),
+                    low=Money(low),
+                    close=Money(c),
+                    volume=1000,
+                )
+            )
+        got = b.order_status(order.id)
+        if case["want_price"] == 0:
+            assert got.status is OrderStatus.OPEN, case["name"]
+            continue
+        assert got.status is OrderStatus.COMPLETE, case["name"]
+        assert got.average_price == case["want_price"], case["name"]
 
 
 def test_options(data: dict[str, Any]) -> None:
