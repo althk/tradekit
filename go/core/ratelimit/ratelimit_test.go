@@ -143,3 +143,31 @@ func TestConcurrentCallersQueueRatherThanCollide(t *testing.T) {
 		t.Errorf("5 concurrent callers finished in %v; they must queue, not all sleep one interval", elapsed)
 	}
 }
+
+func TestCancelledWaitersDoNotDelayLaterCallers(t *testing.T) {
+	l, clock := newFakeLimiter(1)
+	ctx := context.Background()
+	if err := l.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Twenty callers that were cancelled before or while waiting must not
+	// leave twenty reserved seconds behind them.
+	done, cancel := context.WithCancel(ctx)
+	cancel()
+	for range 10 {
+		_ = l.Wait(done)
+	}
+	clock.cancel = context.Canceled
+	for range 10 {
+		_ = l.Wait(ctx)
+	}
+	clock.cancel = nil
+
+	if err := l.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := clock.slept[len(clock.slept)-1]; got != time.Second {
+		t.Errorf("next live caller slept %v, want 1s: cancelled callers kept their slots", got)
+	}
+}

@@ -47,6 +47,11 @@ func (l *Limiter) Wait(ctx context.Context) error {
 	if l == nil || l.interval <= 0 {
 		return ctx.Err()
 	}
+	// A caller that is already cancelled must not take a slot it will never
+	// use; every later caller would wait behind it.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	l.mu.Lock()
 	now := l.now()
@@ -57,13 +62,25 @@ func (l *Limiter) Wait(ctx context.Context) error {
 	// Reserve this caller's slot before unlocking, so concurrent callers
 	// queue behind each other instead of all sleeping the same interval and
 	// then firing at once.
-	l.next = now.Add(wait + l.interval)
+	reserved := now.Add(wait + l.interval)
+	l.next = reserved
 	l.mu.Unlock()
 
 	if wait <= 0 {
-		return ctx.Err()
+		return nil
 	}
-	return l.sleep(ctx, wait)
+	if err := l.sleep(ctx, wait); err != nil {
+		// Hand the slot back when no one has queued behind it. A slot in
+		// the middle of the queue cannot be reclaimed without waking the
+		// callers after it, so it is left to lapse.
+		l.mu.Lock()
+		if l.next.Equal(reserved) {
+			l.next = reserved.Add(-l.interval)
+		}
+		l.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Sleep waits for d, or returns early with ctx.Err() if ctx is done.
