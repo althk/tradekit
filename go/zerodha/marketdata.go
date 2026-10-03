@@ -85,6 +85,8 @@ func (c *Client) Quote(ctx context.Context, keys []domain.InstrumentKey) (map[do
 			// Last, and conflating the two makes every gap calculation
 			// silently zero.
 			Close: paise(q.OHLC.Close),
+			// Volume stays zero: Kite's OHLC endpoint does not carry it,
+			// only the full quote does.
 		}
 	}
 	return out, nil

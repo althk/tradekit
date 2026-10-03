@@ -240,6 +240,9 @@ class Quote:
     close: Money = money.ZERO
     bid: Money = money.ZERO
     ask: Money = money.ZERO
+    # The session's traded quantity so far, 0 when the feed omits it. A daily
+    # strategy evaluated before the close builds the forming bar from a quote.
+    volume: int = 0
 
 
 @dataclass(slots=True)

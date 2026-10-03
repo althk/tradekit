@@ -117,7 +117,8 @@ func (c *Client) Quote(ctx context.Context, keys []domain.InstrumentKey) (map[do
 				// OHLC.Close is the previous session's close, which is
 				// what domain.Quote.Close means. Conflating it with the
 				// last price makes every gap calculation silently zero.
-				Close: paise(entry.OHLC.Close),
+				Close:  paise(entry.OHLC.Close),
+				Volume: int64(entry.Volume),
 			}
 			if len(entry.Depth.Buy) > 0 {
 				quote.Bid = paise(entry.Depth.Buy[0].Price)

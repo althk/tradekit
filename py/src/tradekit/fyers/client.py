@@ -869,6 +869,7 @@ class FyersClient:
                     close=paise(values.get("prev_close_price")),
                     bid=paise(values.get("bid")),
                     ask=paise(values.get("ask")),
+                    volume=_int(values.get("volume")),
                 )
         return out
 

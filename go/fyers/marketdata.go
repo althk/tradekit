@@ -29,6 +29,7 @@ type quoteEntry struct {
 		HighPrice      float64 `json:"high_price"`
 		LowPrice       float64 `json:"low_price"`
 		PrevClosePrice float64 `json:"prev_close_price"`
+		Volume         float64 `json:"volume"`
 		Bid            float64 `json:"bid"`
 		Ask            float64 `json:"ask"`
 		// TT is the quote's timestamp as epoch seconds, sent as a string
@@ -105,9 +106,10 @@ func (c *Client) Quote(ctx context.Context, keys []domain.InstrumentKey) (map[do
 				// which is what domain.Quote.Close means. Conflating it
 				// with the last price makes every gap calculation
 				// silently zero.
-				Close: paise(entry.V.PrevClosePrice),
-				Bid:   paise(entry.V.Bid),
-				Ask:   paise(entry.V.Ask),
+				Close:  paise(entry.V.PrevClosePrice),
+				Bid:    paise(entry.V.Bid),
+				Ask:    paise(entry.V.Ask),
+				Volume: int64(entry.V.Volume),
 			}
 			if secs, err := entry.V.TT.Int64(); err == nil && secs > 0 {
 				quote.At = time.Unix(secs, 0)

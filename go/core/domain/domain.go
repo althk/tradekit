@@ -219,6 +219,11 @@ type Quote struct {
 	Close money.Money // previous session's close
 	Bid   money.Money // 0 when the feed carries no depth
 	Ask   money.Money
+	// Volume is the session's traded quantity so far, 0 when the feed does
+	// not carry it. A daily strategy evaluated before the close builds the
+	// forming day's bar from a quote, and without volume that bar cannot
+	// take part in any volume or turnover average.
+	Volume int64
 }
 
 // Account is the funds view a risk check needs.

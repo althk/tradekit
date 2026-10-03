@@ -59,6 +59,9 @@ func TestQuoteReadsThePreviousCloseAndTheTimestamp(t *testing.T) {
 	if q.Bid != money.MustParse("426.85") || q.Ask != money.MustParse("426.90") {
 		t.Errorf("bid and ask must be mapped, got %s/%s", q.Bid, q.Ask)
 	}
+	if q.Volume != 38977242 {
+		t.Errorf("the session's volume must be carried for a forming daily bar, got %d", q.Volume)
+	}
 	if !q.At.Equal(time.Unix(1622160000, 0)) {
 		t.Errorf("tt is the quote's epoch timestamp, even when sent as a string; got %v", q.At)
 	}

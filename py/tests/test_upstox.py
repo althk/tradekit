@@ -658,6 +658,7 @@ def test_quote_reads_the_previous_close_and_the_depth_top():
                         "instrument_token": "NSE_EQ|RELIANCE",
                         "last_price": 1057.60,
                         "ohlc": {"open": 1040.0, "high": 1060.0, "low": 1035.0, "close": 1038.0},
+                        "volume": 2750000,
                         "depth": {"buy": [{"price": 1057.55}], "sell": [{"price": 1057.65}]},
                     }
                 },
@@ -671,6 +672,7 @@ def test_quote_reads_the_previous_close_and_the_depth_top():
     assert quote.last == money_parse("1057.60")
     assert quote.bid == money_parse("1057.55")
     assert quote.ask == money_parse("1057.65")
+    assert quote.volume == 2750000, "the session's volume must be carried for a forming daily bar"
 
 
 def test_quote_drops_an_entry_that_names_no_instrument():

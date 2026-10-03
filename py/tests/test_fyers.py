@@ -690,6 +690,7 @@ QUOTES = {
                 "high_price": 433.65,
                 "low_price": 423.6,
                 "prev_close_price": 425.2,
+                "volume": 38977242,
                 "tt": "1622160000",
             },
         },
@@ -709,6 +710,7 @@ def test_quote_reads_the_previous_close_and_the_timestamp():
     assert q.close == money_parse("425.20"), "close is the previous session's close, not the last price"
     assert (q.open, q.high, q.low) == (money_parse("430.50"), money_parse("433.65"), money_parse("423.60"))
     assert (q.bid, q.ask) == (money_parse("426.85"), money_parse("426.90"))
+    assert q.volume == 38977242, "the session's volume must be carried for a forming daily bar"
     assert q.at == dt.datetime.fromtimestamp(1622160000, tz=dt.UTC)
 
 

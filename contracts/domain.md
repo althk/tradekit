@@ -108,6 +108,7 @@ Quote
   Last   Money
   Open, High, Low, Close  Money   # the still-forming session's OHLC
   Bid, Ask                Money   # 0 when the feed does not carry depth
+  Volume int                      # session volume so far, 0 if the feed omits it
 
 Position
   Key          InstrumentKey

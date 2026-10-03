@@ -776,6 +776,7 @@ class UpstoxClient:
                     close=paise(ohlc.get("close")),
                     bid=paise(buy[0].get("price")) if buy else Money(0),
                     ask=paise(sell[0].get("price")) if sell else Money(0),
+                    volume=int(entry.get("volume") or 0),
                 )
         return out
 

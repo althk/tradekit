@@ -48,7 +48,7 @@ func TestQuoteReadsThePreviousCloseAndTheDepthTop(t *testing.T) {
 		"/market-quote/quotes": `{"status":"success","data":{
 			"NSE_EQ:RELIANCE":{
 				"instrument_token":"NSE_EQ|RELIANCE","last_price":1057.60,
-				"ohlc":{"open":1040.00,"high":1060.00,"low":1035.00,"close":1038.00},
+				"ohlc":{"open":1040.00,"high":1060.00,"low":1035.00,"close":1038.00},"volume":2750000,
 				"depth":{"buy":[{"price":1057.55,"quantity":100},{"price":1057.50,"quantity":50}],
 				         "sell":[{"price":1057.65,"quantity":80}]}}}}`,
 	})
@@ -67,6 +67,9 @@ func TestQuoteReadsThePreviousCloseAndTheDepthTop(t *testing.T) {
 	}
 	if q.Bid != money.MustParse("1057.55") || q.Ask != money.MustParse("1057.65") {
 		t.Errorf("bid and ask come from the top of each depth side, got bid=%s ask=%s", q.Bid, q.Ask)
+	}
+	if q.Volume != 2750000 {
+		t.Errorf("the session's volume must be carried for a forming daily bar, got %d", q.Volume)
 	}
 }
 
