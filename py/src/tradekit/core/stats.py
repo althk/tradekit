@@ -26,6 +26,7 @@ __all__ = [
     "r_multiple",
     "sharpe",
     "summarize",
+    "summarize_from",
 ]
 
 
@@ -71,8 +72,10 @@ class Metrics:
     by_exit_reason: dict[ExitReason, int] = field(default_factory=dict)
 
 
-def summarize(trades: list[Trade]) -> Metrics:
-    """Compute the metrics for a set of closed trades.
+def summarize_from(trades: list[Trade], opening: Money) -> Metrics:
+    """Compute the metrics for trades on an account that opened with ``opening``.
+
+    The opening balance is what makes ``max_drawdown_pct`` meaningful.
 
     Trades need not be sorted; they are ordered by exit time internally, because
     drawdown is meaningless over an arbitrary ordering.
@@ -109,13 +112,13 @@ def summarize(trades: list[Trade]) -> Metrics:
     m.gross_profit, m.gross_loss = Money(gross_profit), Money(gross_loss)
     m.net_pnl, m.charges = Money(net), Money(charges)
     m.win_rate = m.wins / m.trades
-    m.expectancy = Money(net // m.trades)
+    m.expectancy = _average(net, m.trades)
     m.avg_holding = holding / m.trades
 
     if m.wins:
-        m.avg_win = Money(gross_profit // m.wins)
+        m.avg_win = _average(gross_profit, m.wins)
     if m.losses:
-        m.avg_loss = Money(gross_loss // m.losses)
+        m.avg_loss = _average(gross_loss, m.losses)
 
     if gross_loss > 0:
         m.profit_factor = gross_profit / gross_loss
@@ -125,8 +128,37 @@ def summarize(trades: list[Trade]) -> Metrics:
         # fabricated finite number.
         m.profit_factor = math.inf
 
-    m.max_drawdown, m.max_drawdown_pct = max_drawdown(equity_curve(ordered, money.ZERO))
+    m.max_drawdown, m.max_drawdown_pct = max_drawdown(equity_curve(ordered, opening))
     return m
+
+
+def summarize(trades: list[Trade]) -> Metrics:
+    """Compute the metrics for a set of closed trades.
+
+    Trades need not be sorted; they are ordered by exit time internally, because
+    drawdown is meaningless over an arbitrary ordering. ``max_drawdown_pct`` is
+    left zero: a fraction needs an account balance to be a fraction of, which
+    :func:`summarize_from` takes.
+
+    Raises:
+        MixedModesError: If paper and live trades are mixed.
+
+    """
+    m = summarize_from(trades, money.ZERO)
+    m.max_drawdown_pct = 0.0
+    return m
+
+
+def _average(total: int, n: int) -> Money:
+    """Divide a total by a count, rounding half away from zero.
+
+    Floor division would push a loss away from zero and truncation would pull
+    it toward zero; both disagree with every other amount in tradekit.
+    """
+    q, r = divmod(abs(total), n)
+    if 2 * r >= n:
+        q += 1
+    return Money(-q if total < 0 else q)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,10 +170,19 @@ class Point:
 
 
 def equity_curve(trades: list[Trade], opening: Money = money.ZERO) -> list[Point]:
-    """Accumulate net P&L over trades in exit order, starting from ``opening``."""
+    """Accumulate net P&L over trades in exit order, starting from ``opening``.
+
+    The first point is the opening balance itself, stamped at the earliest
+    entry. Without it a loss on the first trade has no peak to fall from, and
+    the drawdown of a run that only ever lost would be understated by that
+    trade.
+    """
+    if not trades:
+        return []
+    ordered = sorted(trades, key=lambda t: t.exit_at)
     running = int(opening)
-    curve: list[Point] = []
-    for t in sorted(trades, key=lambda t: t.exit_at):
+    curve: list[Point] = [Point(min(t.entry_at for t in ordered), Money(running))]
+    for t in ordered:
         running += int(t.net_pnl)
         curve.append(Point(t.exit_at, Money(running)))
     return curve
@@ -210,6 +251,10 @@ def daily_returns(curve: list[Point], tz: dt.tzinfo | None = None) -> list[float
     return out
 
 
+_FLAT_STD_DEV = 1e-12
+"""Standard deviation below which a return series is treated as constant."""
+
+
 def sharpe(returns: list[float], periods_per_year: float = 252.0, risk_free: float = 0.0) -> float | None:
     """Annualised Sharpe ratio of a series of periodic returns.
 
@@ -226,6 +271,8 @@ def sharpe(returns: list[float], periods_per_year: float = 252.0, risk_free: flo
     # Sample standard deviation: the returns are a sample of the strategy's
     # behaviour, not the whole population of it.
     variance = sum((e - mean) ** 2 for e in excess) / (len(excess) - 1)
-    if variance <= 0:
+    # A constant series picks up a variance of around 1e-33 from rounding in
+    # the mean, which would otherwise report a Sharpe of 1e16.
+    if math.sqrt(variance) < _FLAT_STD_DEV:
         return None
     return mean / math.sqrt(variance) * math.sqrt(periods_per_year)

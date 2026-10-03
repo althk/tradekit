@@ -44,8 +44,11 @@ type Metrics struct {
 	AvgWin  money.Money
 	AvgLoss money.Money // a positive amount
 
-	MaxDrawdown    money.Money // largest peak-to-trough fall in the equity curve
-	MaxDrawdownPct float64     // as a fraction of the peak it fell from
+	MaxDrawdown money.Money // largest peak-to-trough fall in the equity curve
+	// MaxDrawdownPct is the fall as a fraction of the peak it fell from. A
+	// fraction needs an account balance to be a fraction of, so Summarize,
+	// which sees only trades, leaves it zero; SummarizeFrom fills it in.
+	MaxDrawdownPct float64
 
 	AvgHolding time.Duration
 
@@ -57,6 +60,14 @@ type Metrics struct {
 // Trades need not be sorted; they are ordered by exit time internally, because
 // drawdown is meaningless over an arbitrary ordering.
 func Summarize(trades []domain.Trade) (Metrics, error) {
+	m, err := SummarizeFrom(trades, 0)
+	m.MaxDrawdownPct = 0
+	return m, err
+}
+
+// SummarizeFrom is Summarize for an account that opened with the given
+// balance, which is what makes MaxDrawdownPct meaningful.
+func SummarizeFrom(trades []domain.Trade, opening money.Money) (Metrics, error) {
 	m := Metrics{ByExitReason: map[domain.ExitReason]int{}}
 	if len(trades) == 0 {
 		return m, nil
@@ -67,7 +78,7 @@ func Summarize(trades []domain.Trade) (Metrics, error) {
 
 	ordered := make([]domain.Trade, len(trades))
 	copy(ordered, trades)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ExitAt.Before(ordered[j].ExitAt) })
+	sortByExit(ordered)
 
 	var holding time.Duration
 	for _, t := range ordered {
@@ -90,14 +101,14 @@ func Summarize(trades []domain.Trade) (Metrics, error) {
 	}
 
 	m.WinRate = float64(m.Wins) / float64(m.Trades)
-	m.Expectancy = m.NetPnL / money.Money(m.Trades)
+	m.Expectancy = average(m.NetPnL, m.Trades)
 	m.AvgHolding = holding / time.Duration(m.Trades)
 
 	if m.Wins > 0 {
-		m.AvgWin = m.GrossProfit / money.Money(m.Wins)
+		m.AvgWin = average(m.GrossProfit, m.Wins)
 	}
 	if m.Losses > 0 {
-		m.AvgLoss = m.GrossLoss / money.Money(m.Losses)
+		m.AvgLoss = average(m.GrossLoss, m.Losses)
 	}
 
 	switch {
@@ -110,8 +121,37 @@ func Summarize(trades []domain.Trade) (Metrics, error) {
 		m.ProfitFactor = math.Inf(1)
 	}
 
-	m.MaxDrawdown, m.MaxDrawdownPct = MaxDrawdown(EquityCurve(ordered, 0))
+	m.MaxDrawdown, m.MaxDrawdownPct = MaxDrawdown(EquityCurve(ordered, opening))
 	return m, nil
+}
+
+// average divides a total by a count, rounding half away from zero as every
+// other amount in tradekit does; integer division would truncate a loss
+// toward zero and understate it.
+func average(total money.Money, n int) money.Money {
+	a, b := int64(total), int64(n)
+	q, r := a/b, a%b
+	if 2*abs64(r) >= b {
+		if a < 0 {
+			q--
+		} else {
+			q++
+		}
+	}
+	return money.Money(q)
+}
+
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// sortByExit orders trades by exit time, keeping ties in their given order so
+// that trades closed by the same bar sum into the same curve on every run.
+func sortByExit(trades []domain.Trade) {
+	sort.SliceStable(trades, func(i, j int) bool { return trades[i].ExitAt.Before(trades[j].ExitAt) })
 }
 
 func mixedModes(trades []domain.Trade) bool {
@@ -132,12 +172,26 @@ type Point struct {
 
 // EquityCurve accumulates net P&L over trades in exit order, starting from
 // opening.
+//
+// The first point is the opening balance itself, stamped at the earliest entry.
+// Without it a loss on the first trade has no peak to fall from, and the
+// drawdown of a run that only ever lost would be understated by that trade.
 func EquityCurve(trades []domain.Trade, opening money.Money) []Point {
+	if len(trades) == 0 {
+		return nil
+	}
 	ordered := make([]domain.Trade, len(trades))
 	copy(ordered, trades)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ExitAt.Before(ordered[j].ExitAt) })
+	sortByExit(ordered)
 
-	curve := make([]Point, 0, len(ordered))
+	start := ordered[0].EntryAt
+	for _, t := range ordered {
+		if !t.EntryAt.IsZero() && (start.IsZero() || t.EntryAt.Before(start)) {
+			start = t.EntryAt
+		}
+	}
+	curve := make([]Point, 0, len(ordered)+1)
+	curve = append(curve, Point{At: start, Equity: opening})
 	running := opening
 	for _, t := range ordered {
 		running += t.NetPnL
@@ -225,6 +279,10 @@ func DailyReturns(curve []Point, loc *time.Location) []float64 {
 	return returns
 }
 
+// flatStdDev is the standard deviation below which a return series is treated
+// as constant. No real strategy's returns vary by less than a trillionth.
+const flatStdDev = 1e-12
+
 // Sharpe is the annualised Sharpe ratio of a series of periodic returns.
 //
 // periodsPerYear scales the result: 252 for daily returns on an equity
@@ -250,7 +308,9 @@ func Sharpe(returns []float64, periodsPerYear float64, riskFree float64) (float6
 	// Sample standard deviation: the returns are a sample of the strategy's
 	// behaviour, not the whole population of it.
 	variance := sq / float64(len(returns)-1)
-	if variance <= 0 {
+	// A constant series picks up a variance of around 1e-33 from rounding
+	// in the mean, which would otherwise report a Sharpe of 1e16.
+	if math.Sqrt(variance) < flatStdDev {
 		return 0, false
 	}
 	return mean / math.Sqrt(variance) * math.Sqrt(periodsPerYear), true

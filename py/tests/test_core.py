@@ -710,3 +710,26 @@ def test_strike_for_delta_inverts_delta_and_is_in_the_money() -> None:
     close = dt.datetime(2026, 8, 18, 15, 30, tzinfo=dt.UTC)
     assert years_to_expiry(dt.datetime(2026, 8, 18, 10, 30, tzinfo=dt.UTC), close) == pytest.approx(5 / (24 * 365))
     assert years_to_expiry(close + dt.timedelta(hours=20), close) == MIN_YEARS, "past expiry floors, never negative"
+
+
+def test_drawdown_counts_a_losing_first_trade() -> None:
+    trades = [_trade(1, "-100.00"), _trade(2, "-100.00")]
+    m = stats.summarize(trades)
+    assert m.max_drawdown == money.parse("200.00"), "the first loss falls from the opening balance"
+    assert m.max_drawdown_pct == 0.0, "no opening balance, no fraction"
+    assert stats.summarize_from(trades, money.parse("1000.00")).max_drawdown_pct == pytest.approx(0.2)
+
+
+def test_equity_curve_starts_with_the_opening_point() -> None:
+    curve = stats.equity_curve([_trade(1, "100.00"), _trade(2, "-40.00")], money.parse("1000.00"))
+    assert [int(p.equity) for p in curve] == [100000, 110000, 106000]
+    assert curve[0].at == _trade(1, "0.00").entry_at
+
+
+def test_averages_round_half_away_from_zero() -> None:
+    assert stats.summarize([_trade(1, "-0.07"), _trade(2, "0.00"), _trade(3, "0.00")]).expectancy == -2
+    assert stats.summarize([_trade(1, "-0.05"), _trade(2, "0.00")]).expectancy == -3
+
+
+def test_sharpe_of_a_constant_series_is_undefined() -> None:
+    assert stats.sharpe([0.1, 0.1, 0.1]) is None, "float error in the mean is not variance"

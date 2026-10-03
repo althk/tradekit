@@ -148,11 +148,53 @@ func TestMaxDrawdownOfARisingCurveIsZero(t *testing.T) {
 
 func TestEquityCurveStartsFromOpening(t *testing.T) {
 	curve := EquityCurve([]domain.Trade{trade(1, "100.00", false), trade(2, "-40.00", false)}, money.MustParse("1000.00"))
-	if len(curve) != 2 {
-		t.Fatalf("got %d points, want 2", len(curve))
+	if len(curve) != 3 {
+		t.Fatalf("got %d points, want the opening point plus one per trade", len(curve))
 	}
-	if curve[0].Equity != money.MustParse("1100.00") || curve[1].Equity != money.MustParse("1060.00") {
-		t.Errorf("curve = %s, %s; want 1100.00, 1060.00", curve[0].Equity, curve[1].Equity)
+	if curve[0].Equity != money.MustParse("1000.00") || !curve[0].At.Equal(day(1).Add(-2*time.Hour)) {
+		t.Errorf("first point = %s at %s, want the 1000.00 opening at the first entry", curve[0].Equity, curve[0].At)
+	}
+	if curve[1].Equity != money.MustParse("1100.00") || curve[2].Equity != money.MustParse("1060.00") {
+		t.Errorf("curve = %s, %s; want 1100.00, 1060.00", curve[1].Equity, curve[2].Equity)
+	}
+}
+
+func TestDrawdownCountsALosingFirstTrade(t *testing.T) {
+	trades := []domain.Trade{trade(1, "-100.00", false), trade(2, "-100.00", false)}
+	m, err := Summarize(trades)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.MaxDrawdown != money.MustParse("200.00") {
+		t.Errorf("MaxDrawdown = %s, want 200.00: the first loss falls from the opening balance", m.MaxDrawdown)
+	}
+	if m.MaxDrawdownPct != 0 {
+		t.Errorf("MaxDrawdownPct = %v, want 0 when no opening balance is known", m.MaxDrawdownPct)
+	}
+
+	from, _ := SummarizeFrom(trades, money.MustParse("1000.00"))
+	if math.Abs(from.MaxDrawdownPct-0.2) > 1e-9 {
+		t.Errorf("MaxDrawdownPct = %v, want 0.2 of the 1000.00 opening", from.MaxDrawdownPct)
+	}
+}
+
+func TestAveragesRoundHalfAwayFromZero(t *testing.T) {
+	trades := []domain.Trade{trade(1, "-0.07", false), trade(2, "0.00", false), trade(3, "0.00", false)}
+	m, _ := Summarize(trades)
+	// -7 / 3 = -2.33 paise: rounds to -2, where flooring would give -3.
+	if m.Expectancy != -2 {
+		t.Errorf("Expectancy = %d, want -2", m.Expectancy)
+	}
+	m, _ = Summarize([]domain.Trade{trade(1, "-0.05", false), trade(2, "0.00", false)})
+	// -5 / 2 = -2.5 paise: half away from zero is -3, truncation gives -2.
+	if m.Expectancy != -3 {
+		t.Errorf("Expectancy = %d, want -3", m.Expectancy)
+	}
+}
+
+func TestSharpeOfAConstantSeriesIsUndefined(t *testing.T) {
+	if got, ok := Sharpe([]float64{0.1, 0.1, 0.1}, 252, 0); ok {
+		t.Errorf("Sharpe = %v, want undefined: float error in the mean is not variance", got)
 	}
 }
 
