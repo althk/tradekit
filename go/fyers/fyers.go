@@ -95,6 +95,14 @@ const (
 	DefaultHistoricalRequestsPerSecond = 3
 )
 
+// DefaultRequestsPerMinute is the account-wide cap every request also waits on.
+//
+// The two per-second limiters above are independent, so together they would
+// allow 11 a second and 480 a minute -- a quote scan running for half a minute
+// would breach FYERS's 200-per-minute window. This one limiter is shared by
+// every endpoint, which is what the per-minute rule actually counts.
+const DefaultRequestsPerMinute = 200
+
 // Options configures a Client.
 type Options struct {
 	// AppID is the app's client id, of the form "XXXXXXXXXX-100". It is
@@ -122,6 +130,10 @@ type Options struct {
 	// HistoricalRequestsPerSecond paces the history endpoint, which is the
 	// one a backfill hammers.
 	HistoricalRequestsPerSecond float64
+	// RequestsPerMinute caps every call together, on top of the per-second
+	// rates. Zero uses DefaultRequestsPerMinute; a negative value disables
+	// it, which only a test should do.
+	RequestsPerMinute float64
 
 	// Tag is attached to every order placed through this client, so orders
 	// this system placed can be told from ones placed by hand. FYERS
@@ -160,6 +172,8 @@ type Client struct {
 
 	general    *ratelimit.Limiter
 	historical *ratelimit.Limiter
+	// account enforces the per-minute window shared by every endpoint.
+	account *ratelimit.Limiter
 
 	// sleep is injectable so tests exercise the backoff schedule without
 	// waiting for it.
@@ -187,6 +201,9 @@ func New(opts Options) (*Client, error) {
 	if opts.HistoricalRequestsPerSecond == 0 {
 		opts.HistoricalRequestsPerSecond = DefaultHistoricalRequestsPerSecond
 	}
+	if opts.RequestsPerMinute == 0 {
+		opts.RequestsPerMinute = DefaultRequestsPerMinute
+	}
 	if opts.Timeout == 0 {
 		opts.Timeout = 30 * time.Second
 	}
@@ -201,6 +218,7 @@ func New(opts Options) (*Client, error) {
 		retryBase:     opts.RetryBase,
 		general:       ratelimit.New(opts.RequestsPerSecond),
 		historical:    ratelimit.New(opts.HistoricalRequestsPerSecond),
+		account:       ratelimit.New(opts.RequestsPerMinute / 60),
 		sleep:         ratelimit.Sleep,
 		accessToken:   opts.AccessToken,
 		tokenIssuedAt: opts.TokenIssuedAt,

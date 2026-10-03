@@ -68,6 +68,27 @@ const (
 // "MODIRUBBER-BE", and is passed through untouched.
 const defaultSeries = "EQ"
 
+// knownSeries lists the NSE and BSE cash series a symbol suffix can name.
+//
+// A hyphen alone cannot mark a series, because some trading symbols contain
+// one: BAJAJ-AUTO and MCDOWELL-N are company symbols, not BAJAJ in the AUTO
+// series. Only a suffix on this list is read as a series.
+var knownSeries = map[string]bool{
+	"EQ": true, "BE": true, "BZ": true, "BL": true, "BT": true, "SM": true,
+	"ST": true, "SZ": true, "IL": true, "IT": true, "GB": true, "GS": true,
+	"MF": true, "ME": true, "RR": true, "TB": true, "IV": true, "E1": true,
+	"P1": true, "X": true, "A": true, "B": true, "T": true, "Z": true,
+}
+
+// splitSeries separates a cash symbol's series suffix, when it has one.
+func splitSeries(symbol string) (base, series string, ok bool) {
+	i := strings.LastIndex(symbol, "-")
+	if i <= 0 || !knownSeries[strings.ToUpper(symbol[i+1:])] {
+		return symbol, "", false
+	}
+	return symbol[:i], symbol[i+1:], true
+}
+
 // symbolFor renders an instrument in FYERS's "EX:SYMBOL-SERIES" form.
 //
 // Unlike Upstox, FYERS addresses instruments by a symbol the adapter can
@@ -85,7 +106,7 @@ func symbolFor(k domain.InstrumentKey) string {
 	}
 	switch strings.ToUpper(strings.TrimSpace(k.Exchange)) {
 	case "NSE", "BSE":
-		if strings.Contains(symbol, "-") {
+		if _, _, ok := splitSeries(symbol); ok {
 			return strings.ToUpper(k.Exchange) + ":" + symbol
 		}
 		return strings.ToUpper(k.Exchange) + ":" + symbol + "-" + defaultSeries
@@ -114,12 +135,12 @@ func keyFor(symbol string, segment int) domain.InstrumentKey {
 	}
 	exchange = strings.ToUpper(exchange)
 
-	base, series, hasSeries := strings.Cut(rest, "-")
 	// "-INDEX" is a suffix FYERS puts on index quotes; it is not a series
 	// and an index is not a cash equity.
-	if hasSeries && strings.EqualFold(series, "INDEX") {
+	if strings.HasSuffix(strings.ToUpper(rest), "-INDEX") {
 		return domain.InstrumentKey{Exchange: exchange, Symbol: rest}
 	}
+	base, series, hasSeries := splitSeries(rest)
 
 	cash := hasSeries
 	switch segment {

@@ -209,3 +209,33 @@ func TestCancelProtectiveSendsTheIDInTheBody(t *testing.T) {
 		t.Errorf("the id goes in a JSON body on DELETE, got %s", sent["/gtt/orders/sync"])
 	}
 }
+
+func TestGTTLegsHonourStopLimit(t *testing.T) {
+	info, err := gttLegs(domain.Protective{
+		Side: domain.Sell, Quantity: 5, Stop: money.MustParse("95.00"), StopLimit: money.MustParse("94.50"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Leg1.TriggerPrice != 95 || info.Leg1.Price != 94.5 {
+		t.Errorf("leg = trigger %v limit %v, want 95 / 94.5: the stop's buffer was dropped", info.Leg1.TriggerPrice, info.Leg1.Price)
+	}
+	oco, _ := gttLegs(domain.Protective{
+		Side: domain.Sell, Quantity: 5, Stop: money.MustParse("95.00"), StopLimit: money.MustParse("94.50"),
+		Target: money.MustParse("110.00"),
+	})
+	if oco.Leg1.Price != 110 || oco.Leg2 == nil || oco.Leg2.Price != 94.5 {
+		t.Errorf("OCO legs = %+v / %+v, want the target at 110 and the stop limited at 94.5", oco.Leg1, oco.Leg2)
+	}
+}
+
+func TestFromGTTReadsTheStopLimitBack(t *testing.T) {
+	p := fromGTT(gttRow{
+		ID: "x", Symbol: "NSE:SBIN-EQ", TranSide: -1, Qty: 1, OCOInd: gttOCO,
+		PriceTrigger: 800, PriceLimit: 800, Price2Trigger: 700, Price2Limit: 695,
+	})
+	if p.Stop != money.MustParse("700.00") || p.StopLimit != money.MustParse("695.00") {
+		t.Errorf("stop %s limit %s, want 700.00 / 695.00: ModifyStop rebuilds from this and would lose the buffer",
+			p.Stop, p.StopLimit)
+	}
+}

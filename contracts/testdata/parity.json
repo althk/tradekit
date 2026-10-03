@@ -744,6 +744,16 @@
         "want": "NSE:SBIN-EQ"
       },
       {
+        "exchange": "NSE",
+        "symbol": "BAJAJ-AUTO",
+        "want": "NSE:BAJAJ-AUTO-EQ"
+      },
+      {
+        "exchange": "NSE",
+        "symbol": "MCDOWELL-N",
+        "want": "NSE:MCDOWELL-N-EQ"
+      },
+      {
         "exchange": "BSE",
         "symbol": "SBIN",
         "want": "BSE:SBIN-EQ"
@@ -785,6 +795,9 @@
       }
     ],
     "key": [
+      {"symbol": "NSE:BAJAJ-AUTO-EQ", "segment": 0, "exchange": "NSE", "want": "BAJAJ-AUTO"},
+      {"symbol": "NSE:BAJAJ-AUTO-EQ", "segment": 10, "exchange": "NSE", "want": "BAJAJ-AUTO"},
+      {"symbol": "NSE:BAJAJ-AUTO25JANFUT", "segment": 0, "exchange": "NFO", "want": "BAJAJ-AUTO25JANFUT"},
       {
         "symbol": "NSE:SBIN-EQ",
         "segment": 10,

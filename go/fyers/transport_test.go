@@ -27,6 +27,7 @@ func newTestClient(t *testing.T, srv *httptest.Server) (*Client, *[]time.Duratio
 		// every test wait.
 		RequestsPerSecond:           -1,
 		HistoricalRequestsPerSecond: -1,
+		RequestsPerMinute:           -1,
 		RetryBase:                   time.Second,
 	})
 	if err != nil {
@@ -238,5 +239,34 @@ func TestBackoffCapsAnAbsurdRetryAfter(t *testing.T) {
 	}
 	if got := parseRetryAfter("", "abc"); got != 0 {
 		t.Errorf("an unparseable header must be ignored, got %v", got)
+	}
+}
+
+func TestPerMinuteCapIsSharedAcrossEndpoints(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"s":"ok","code":200}`))
+	}))
+	t.Cleanup(srv.Close)
+	// 600 a minute is one request per 100ms however the per-second limiters
+	// are set, and it applies to history and trading calls alike.
+	c, err := New(Options{
+		AppID: "APP-100", AccessToken: "token", BaseURL: srv.URL, DataURL: srv.URL,
+		RequestsPerSecond: -1, HistoricalRequestsPerSecond: -1, RequestsPerMinute: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for i := range 4 {
+		req := request{method: http.MethodGet, path: "/profile", retry: true}
+		if i%2 == 1 {
+			req.limiter = c.historical
+		}
+		if err := c.doJSON(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Errorf("4 requests took %v, want at least ~300ms: the account-wide per-minute cap was not applied", elapsed)
 	}
 }

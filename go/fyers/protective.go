@@ -136,11 +136,10 @@ func (c *Client) PlaceProtective(ctx context.Context, p domain.Protective) (stri
 // leg1; a buy that protects a short is the mirror image, with the stop as
 // leg1. Assigning by role would have FYERS reject every short's OCO.
 //
-// The exit is placed as a limit at the trigger price, which is what FYERS's
-// own web client does. A limit exactly at the trigger can be left unfilled by
-// a gap; that is the same exposure a Kite GTT has, and the alternative — a
-// limit some distance through the trigger — is a policy the strategy, not the
-// adapter, should set.
+// The exit is placed as a limit. A target's limit is at its trigger; a stop's
+// is at Protective.StopLimit when the strategy set one, and at the trigger
+// otherwise. A stop limit exactly at the trigger can be left unfilled by a gap,
+// which is why the buffer exists, and choosing it is the strategy's policy.
 func gttLegs(p domain.Protective) (gttOrderInfo, error) {
 	if p.Quantity <= 0 {
 		return gttOrderInfo{}, fmt.Errorf("fyers: protective quantity must be positive, got %d", p.Quantity)
@@ -149,23 +148,26 @@ func gttLegs(p domain.Protective) (gttOrderInfo, error) {
 		return gttOrderInfo{}, fmt.Errorf("fyers: a protective order needs a stop or a target")
 	}
 
-	leg := func(level money.Money) gttLeg {
-		return gttLeg{Price: rupees(level), TriggerPrice: rupees(level), Qty: p.Quantity}
+	leg := func(level, limit money.Money) gttLeg {
+		return gttLeg{Price: rupees(limit), TriggerPrice: rupees(level), Qty: p.Quantity}
 	}
+	stop := leg(p.Stop, p.Stop)
+	if p.StopLimit > 0 {
+		stop = leg(p.Stop, p.StopLimit)
+	}
+	target := leg(p.Target, p.Target)
 	if p.OCO() {
-		above, below := p.Target, p.Stop
+		above, below := target, stop
 		if p.Side == domain.Buy {
-			above, below = p.Stop, p.Target
+			above, below = stop, target
 		}
-		l2 := leg(below)
-		return gttOrderInfo{Leg1: leg(above), Leg2: &l2}, nil
+		return gttOrderInfo{Leg1: above, Leg2: &below}, nil
 	}
 
-	level := p.Stop
-	if level <= 0 {
-		level = p.Target
+	if p.Stop > 0 {
+		return gttOrderInfo{Leg1: stop}, nil
 	}
-	return gttOrderInfo{Leg1: leg(level)}, nil
+	return gttOrderInfo{Leg1: target}, nil
 }
 
 // ModifyStop moves a resting trigger's stop, as a breakeven or trailing
@@ -180,6 +182,10 @@ func (c *Client) ModifyStop(ctx context.Context, id string, stop money.Money) er
 	existing, err := c.protective(ctx, id)
 	if err != nil {
 		return err
+	}
+	// The stop leg's limit buffer moves with the stop, as on Kite.
+	if existing.StopLimit > 0 && existing.Stop > 0 {
+		existing.StopLimit = stop + (existing.StopLimit - existing.Stop)
 	}
 	existing.Stop = stop
 
@@ -289,16 +295,21 @@ func fromGTT(r gttRow) domain.Protective {
 		Product:  fromProduct(r.ProductType),
 	}
 	leg1, leg2 := paise(r.PriceTrigger), paise(r.Price2Trigger)
+	limit1, limit2 := paise(r.PriceLimit), paise(r.Price2Limit)
 
 	if r.OCOInd == gttOCO || leg2 > 0 {
 		high, low := leg1, leg2
+		highLimit, lowLimit := limit1, limit2
 		if low > high {
 			high, low = low, high
+			highLimit, lowLimit = lowLimit, highLimit
 		}
 		if p.Side == domain.Sell {
 			p.Stop, p.Target = low, high
+			p.StopLimit = stopLimitOf(low, lowLimit)
 		} else {
 			p.Stop, p.Target = high, low
+			p.StopLimit = stopLimitOf(high, highLimit)
 		}
 		return p
 	}
@@ -309,6 +320,16 @@ func fromGTT(r gttRow) domain.Protective {
 		p.Target = leg1
 	} else {
 		p.Stop = leg1
+		p.StopLimit = stopLimitOf(leg1, limit1)
 	}
 	return p
+}
+
+// stopLimitOf returns a stop leg's limit price as a Protective records it: zero
+// when the limit is at the trigger (or unknown), the limit itself otherwise.
+func stopLimitOf(stop, limit money.Money) money.Money {
+	if limit <= 0 || limit == stop {
+		return 0
+	}
+	return limit
 }

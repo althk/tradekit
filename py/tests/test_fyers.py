@@ -51,6 +51,7 @@ from tradekit.fyers.transport import (
     TokenExpiredError,
     TransientError,
     Transport,
+    UnknownOutcomeError,
 )
 
 SBIN = InstrumentKey(exchange="NSE", symbol="SBIN")
@@ -86,6 +87,7 @@ class Recorder:
 def make_transport(handler, **kwargs) -> Transport:
     """A transport over the given handler, with no real sleeping."""
     kwargs.setdefault("sleep", lambda _: None)
+    kwargs.setdefault("rate_per_minute", 0)
     return Transport(
         auth_provider=lambda: "APP-100:token",
         base_url="https://api.test/api/v3",
@@ -277,7 +279,7 @@ def test_place_order_is_never_retried():
         calls["n"] += 1
         return httpx.Response(503, text="unavailable")
 
-    with pytest.raises(TransientError):
+    with pytest.raises(UnknownOutcomeError):
         make_client(handler).place_order(OrderRequest(key=SBIN, side=Side.BUY, quantity=1, product=Product.MIS))
     assert calls["n"] == 1, "retrying a POST that may have placed an order places a second one"
 
@@ -986,3 +988,91 @@ def test_login_callback_checks_the_state_login_url_minted():
     )
     assert client.login_callback({"auth_code": "abc", "state": state}) == "fresh"
     assert recorder.sent("/api/v3/validate-authcode")["code"] == "abc"
+
+
+def test_gtt_legs_honour_stop_limit():
+    single = _gtt_legs(
+        Protective(key=SBIN, side=Side.SELL, quantity=5, stop=money_parse("95.00"), stop_limit=money_parse("94.50"))
+    )
+    assert single["leg1"]["triggerPrice"] == 95 and single["leg1"]["price"] == 94.5, "the stop's buffer was dropped"
+    oco = _gtt_legs(
+        Protective(
+            key=SBIN,
+            side=Side.SELL,
+            quantity=5,
+            stop=money_parse("95.00"),
+            stop_limit=money_parse("94.50"),
+            target=money_parse("110.00"),
+        )
+    )
+    assert oco["leg1"]["price"] == 110 and oco["leg2"]["price"] == 94.5
+
+
+def test_from_gtt_reads_the_stop_limit_back():
+    p = _from_gtt(
+        {
+            "id": "x",
+            "symbol": "NSE:SBIN-EQ",
+            "tran_side": -1,
+            "qty": 1,
+            "gtt_oco_ind": 2,
+            "price_trigger": 800,
+            "price_limit": 800,
+            "price2_trigger": 700,
+            "price2_limit": 695,
+        }
+    )
+    assert p.stop == money_parse("700.00") and p.stop_limit == money_parse("695.00"), "buffer lost"
+
+
+@pytest.mark.parametrize(
+    "respond",
+    [
+        lambda request: httpx.Response(504),
+        lambda request: httpx.Response(200, text="<html>ok</html>"),
+        lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("no answer", request=request)),
+    ],
+    ids=["server error", "undecodable success", "timeout after sending"],
+)
+def test_ambiguous_placement_is_not_transient(respond):
+    from tradekit.core.ports import UnknownOutcomeError as PortsUnknownOutcome
+
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return respond(request)
+
+    order = OrderRequest(key=SBIN, side=Side.BUY, quantity=1, type=OrderType.MARKET, product=Product.CNC)
+    with pytest.raises(PortsUnknownOutcome) as caught:
+        make_client(handler).place_order(order)
+    assert not caught.value.retryable, "retrying an ambiguous placement places a second order"
+    assert len(calls) == 1, "the placement must be sent once"
+
+
+def test_placement_that_never_connected_is_transient():
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    order = OrderRequest(key=SBIN, side=Side.BUY, quantity=1, type=OrderType.MARKET, product=Product.CNC)
+    with pytest.raises(Exception) as caught:
+        make_client(handler).place_order(order)
+    assert getattr(caught.value, "retryable", False), "a refused connection cannot have reached the broker"
+
+
+def test_candles_refuse_naive_bounds():
+    recorder, ranges = _history_recorder()
+    naive = dt.datetime(2025, 4, 14, 9, 15)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        make_client(recorder).candles(SBIN, Timeframe.M5, naive, naive + dt.timedelta(days=1))
+    assert ranges == [], "a naive bound is read as host-local time and shifts the window"
+
+
+def test_per_minute_cap_applies_to_every_request():
+    import time
+
+    transport = make_transport(lambda request: httpx.Response(200, json={"s": "ok"}), rate_per_minute=1200)
+    started = time.monotonic()
+    for _ in range(3):
+        transport.request("GET", "/profile")
+    assert time.monotonic() - started >= 0.08, "1200 a minute is one request per 50ms; the cap was not applied"

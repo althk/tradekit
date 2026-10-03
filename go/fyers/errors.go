@@ -25,6 +25,10 @@ var (
 	// ErrRejected means FYERS refused the request on its merits. Repeating
 	// it unchanged will be refused again.
 	ErrRejected = errors.New("fyers: rejected")
+	// ErrUnknownOutcome means a call that changes state failed without saying
+	// whether FYERS acted on it. Reconcile before repeating it; see
+	// ports.ErrUnknownOutcome.
+	ErrUnknownOutcome = fmt.Errorf("fyers: %w", ports.ErrUnknownOutcome)
 )
 
 // FYERS's application-level error codes, carried in the "code" field of the

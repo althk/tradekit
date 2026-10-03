@@ -171,11 +171,11 @@ def _gtt_legs(p: Protective) -> dict[str, Any]:
     leg1; a buy that protects a short is the mirror image, with the stop as
     leg1. Assigning by role would have FYERS reject every short's OCO.
 
-    The exit is placed as a limit at the trigger price, which is what FYERS's
-    own web client does. A limit exactly at the trigger can be left unfilled by
-    a gap; that is the same exposure a Kite GTT has, and the alternative -- a
-    limit some distance through the trigger -- is a policy the strategy, not
-    the adapter, should set.
+    The exit is placed as a limit. A target's limit is at its trigger; a stop's
+    is at ``Protective.stop_limit`` when the strategy set one, and at the
+    trigger otherwise. A stop limit exactly at the trigger can be left unfilled
+    by a gap, which is why the buffer exists, and choosing it is the strategy's
+    policy.
 
     Raises:
         ValueError: For a non-positive quantity or a protective with no level.
@@ -186,13 +186,20 @@ def _gtt_legs(p: Protective) -> dict[str, Any]:
     if p.stop <= 0 and p.target <= 0:
         raise ValueError("fyers: a protective order needs a stop or a target")
 
-    def leg(level: Money) -> dict[str, Any]:
-        return {"price": rupees(level), "triggerPrice": rupees(level), "qty": p.quantity}
+    def leg(level: Money, limit: Money) -> dict[str, Any]:
+        return {"price": rupees(limit), "triggerPrice": rupees(level), "qty": p.quantity}
 
+    stop = leg(p.stop, p.stop_limit if p.stop_limit > 0 else p.stop)
+    target = leg(p.target, p.target)
     if p.oco:
-        above, below = (p.target, p.stop) if p.side == Side.SELL else (p.stop, p.target)
-        return {"leg1": leg(above), "leg2": leg(below)}
-    return {"leg1": leg(p.stop if p.stop > 0 else p.target)}
+        above, below = (target, stop) if p.side == Side.SELL else (stop, target)
+        return {"leg1": above, "leg2": below}
+    return {"leg1": stop if p.stop > 0 else target}
+
+
+def _stop_limit_of(stop: Money, limit: Money) -> Money:
+    """A stop leg's limit as a Protective records it: zero when at the trigger or unknown."""
+    return Money(0) if limit <= 0 or limit == stop else limit
 
 
 def _from_gtt(row: dict[str, Any]) -> Protective:
@@ -210,19 +217,25 @@ def _from_gtt(row: dict[str, Any]) -> Protective:
     side = from_side(_int(row.get("tran_side"), 1))
     leg1 = paise(row.get("price_trigger"))
     leg2 = paise(row.get("price2_trigger"))
+    limit1 = paise(row.get("price_limit"))
+    limit2 = paise(row.get("price2_limit"))
     stop = Money(0)
     target = Money(0)
+    stop_limit = Money(0)
 
     if _int(row.get("gtt_oco_ind")) == GTT_OCO or leg2 > 0:
-        high, low = (leg1, leg2) if leg1 >= leg2 else (leg2, leg1)
-        stop, target = (low, high) if side == Side.SELL else (high, low)
+        (high, high_limit), (low, low_limit) = sorted(((leg1, limit1), (leg2, limit2)), reverse=True)
+        if side == Side.SELL:
+            stop, target, stop_limit = low, high, _stop_limit_of(low, low_limit)
+        else:
+            stop, target, stop_limit = high, low, _stop_limit_of(high, high_limit)
     else:
         ltp = paise(row.get("ltp"))
         is_target = ltp > 0 and ((side == Side.SELL and leg1 > ltp) or (side == Side.BUY and leg1 < ltp))
         if is_target:
             target = leg1
         else:
-            stop = leg1
+            stop, stop_limit = leg1, _stop_limit_of(leg1, limit1)
 
     return Protective(
         id=str(row.get("id") or ""),
@@ -231,6 +244,7 @@ def _from_gtt(row: dict[str, Any]) -> Protective:
         quantity=_int(row.get("qty")),
         stop=stop,
         target=target,
+        stop_limit=stop_limit,
         product=from_product(str(row.get("product_type") or "")),
     )
 
@@ -773,6 +787,10 @@ class FyersClient:
 
         """
         existing = self._protective(protective_id)
+        # The stop leg's limit buffer moves with the stop, as on Kite.
+        stop_limit = existing.stop_limit
+        if stop_limit > 0 and existing.stop > 0:
+            stop_limit = Money(stop + (stop_limit - existing.stop))
         updated = Protective(
             id=existing.id,
             key=existing.key,
@@ -780,6 +798,7 @@ class FyersClient:
             quantity=existing.quantity,
             stop=stop,
             target=existing.target,
+            stop_limit=stop_limit,
             product=existing.product,
         )
         self._transport.request(
@@ -887,11 +906,16 @@ class FyersClient:
         includes the current minute is returned partial.
 
         Raises:
-            ValueError: For an inverted range. FYERS answers one with an empty
+            ValueError: For naive bounds, or for an inverted range. FYERS answers one with an empty
                 series, which reads as "no trades".
 
         """
         resolution = to_resolution(timeframe)
+        if start.tzinfo is None or end.tzinfo is None:
+            # A naive datetime would be read as the host's local time, which
+            # on a UTC server shifts the window by 5h30m and loses the
+            # session's latest bars.
+            raise ValueError("candle range bounds must be timezone-aware")
         if end < start:
             raise ValueError(f"fyers: candle range ends ({end.date()}) before it starts ({start.date()})")
         symbol = symbol_for(key)

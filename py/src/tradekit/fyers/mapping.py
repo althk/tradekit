@@ -183,7 +183,7 @@ def symbol_for(key: InstrumentKey) -> str:
         return symbol
     exchange = key.exchange.strip().upper()
     if exchange in ("NSE", "BSE"):
-        if "-" in symbol:
+        if _split_series(symbol) is not None:
             return f"{exchange}:{symbol}"
         return f"{exchange}:{symbol}-{DEFAULT_SERIES}"
     if exchange in ("NFO", "CDS"):
@@ -191,6 +191,26 @@ def symbol_for(key: InstrumentKey) -> str:
     if exchange in ("BFO", "BCD"):
         return f"BSE:{symbol}"
     return f"{exchange}:{symbol}"
+
+
+KNOWN_SERIES = frozenset(
+    {"EQ", "BE", "BZ", "BL", "BT", "SM", "ST", "SZ", "IL", "IT", "GB", "GS", "MF", "ME", "RR", "TB", "IV", "E1", "P1"}
+    | {"X", "A", "B", "T", "Z"}
+)
+"""The NSE and BSE cash series a symbol suffix can name.
+
+A hyphen alone cannot mark a series, because some trading symbols contain one:
+``BAJAJ-AUTO`` and ``MCDOWELL-N`` are company symbols, not ``BAJAJ`` in the
+``AUTO`` series. Only a suffix on this list is read as a series.
+"""
+
+
+def _split_series(symbol: str) -> tuple[str, str] | None:
+    """Separate a cash symbol's series suffix, when it has one."""
+    base, dash, series = symbol.rpartition("-")
+    if not dash or not base or series.upper() not in KNOWN_SERIES:
+        return None
+    return base, series
 
 
 def key_for(symbol: str, segment: int = 0) -> InstrumentKey:
@@ -209,12 +229,13 @@ def key_for(symbol: str, segment: int = 0) -> InstrumentKey:
         return InstrumentKey(exchange="", symbol=symbol)
     exchange = exchange.upper()
 
-    base, dash, series = rest.partition("-")
-    has_series = bool(dash)
     # "-INDEX" is a suffix FYERS puts on index quotes; it is not a series and
     # an index is not a cash equity.
-    if has_series and series.upper() == "INDEX":
+    if rest.upper().endswith("-INDEX"):
         return InstrumentKey(exchange=exchange, symbol=rest)
+    split = _split_series(rest)
+    has_series = split is not None
+    base, series = split if split is not None else (rest, "")
 
     cash = has_series
     if segment == SEGMENT_CAPITAL_MARKET:
