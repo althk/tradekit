@@ -171,7 +171,8 @@ def compute(table: Table, trade: Trade) -> Charges:
         rate = table.lookup(trade.broker, trade.segment, kind, on)
         if rate is None:
             return money.ZERO
-        value = Money(int(rate.value)) if rate.flat else money.mul_fraction(turnover, rate.value)
+        # A flat amount rounds half away from zero like every other amount; int() would truncate.
+        value = money.mul_fraction(Money(1), rate.value) if rate.flat else money.mul_fraction(turnover, rate.value)
         if rate.cap > 0 and value > rate.cap:
             value = rate.cap
         return value

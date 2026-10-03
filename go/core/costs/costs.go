@@ -205,7 +205,9 @@ func (t *Table) apply(tr Trade, kind Kind, turnover money.Money, on time.Time) m
 	}
 	var v money.Money
 	if r.Flat {
-		v = money.Money(r.Value)
+		// Rounded half away from zero like every other amount; a plain
+		// conversion would truncate 1999.6 paise to 1999.
+		v = money.Money(1).MulFraction(r.Value)
 	} else {
 		v = turnover.MulFraction(r.Value)
 	}

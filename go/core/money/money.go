@@ -69,7 +69,9 @@ func Parse(s string) (Money, error) {
 	}
 
 	intPart, fracPart, hasFrac := strings.Cut(s, ".")
-	if intPart == "" && !hasFrac {
+	// "." and "-." have no digits at all; Python's parser refuses them and
+	// so must this one, or the two disagree on what is a price.
+	if intPart == "" && fracPart == "" {
 		return 0, fmt.Errorf("%w: %q", ErrParse, s)
 	}
 	if intPart == "" {

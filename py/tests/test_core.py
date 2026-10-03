@@ -769,3 +769,12 @@ def test_trail_ignores_a_warming_up_atr() -> None:
     for side in (Side.BUY, Side.SELL):
         assert trail(side, stop, money.parse("500.00"), math.nan, 2) == stop
         assert trail(side, stop, money.parse("500.00"), 0.0, 2) == stop
+
+
+def test_round_half_away_agrees_with_go_at_float_edges() -> None:
+    # 0.49999999999999994 + 0.5 is 1.0 in binary floating point; Go's
+    # math.Round gives 0, and the two libraries must agree on every amount.
+    assert money.from_major(0.0049999999999999994) == 0
+    assert money.mul_fraction(Money(1), 0.49999999999999994) == 0
+    assert money.mul_fraction(Money(1), 0.5) == 1
+    assert money.mul_fraction(Money(1), -0.5) == -1

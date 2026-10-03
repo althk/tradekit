@@ -148,7 +148,14 @@ def _round_half_away(v: float) -> int:
     """
     if math.isnan(v) or math.isinf(v):
         return 0
-    return math.floor(v + 0.5) if v >= 0 else math.ceil(v - 0.5)
+    # Adding 0.5 before flooring is not exact: 0.49999999999999994 + 0.5
+    # rounds up to 1.0 in binary floating point, where Go's math.Round gives 0.
+    # Splitting off the fraction first is exact for every double.
+    magnitude = abs(v)
+    whole = math.floor(magnitude)
+    if magnitude - whole >= 0.5:
+        whole += 1
+    return int(whole) if v >= 0 else -int(whole)
 
 
 def _round_quotient(a: int, b: int) -> int:

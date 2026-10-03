@@ -211,3 +211,11 @@ func TestDefaultTemplateIsAllZero(t *testing.T) {
 		t.Errorf("the template must price nothing until it is filled in, got total %s", got.Total)
 	}
 }
+
+func TestAFlatChargeRoundsRatherThanTruncates(t *testing.T) {
+	tbl := NewTable()
+	tbl.Set("b", EquityDelivery, Brokerage, Rate{Value: 1999.6, Flat: true, EffectiveFrom: date(2020, 1, 1)})
+	if got := tbl.apply(Trade{Broker: "b", Segment: EquityDelivery}, Brokerage, 0, date(2026, 1, 1)); got != 2000 {
+		t.Errorf("flat charge = %d, want 2000: 1999.6 paise rounds half away from zero", got)
+	}
+}
