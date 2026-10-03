@@ -44,7 +44,9 @@ type Report struct {
 // report is the last place a live fill should be able to sneak into a
 // simulated result.
 func Build(spec RunSpec, trades []domain.Trade, curve []stats.Point) (Report, error) {
-	metrics, err := stats.Summarize(trades)
+	// SummarizeFrom, so the headline drawdown percentage is measured against
+	// the account the run opened with rather than left at zero.
+	metrics, err := stats.SummarizeFrom(trades, spec.Opening)
 	if err != nil {
 		return Report{}, fmt.Errorf("backtest: summarising trades: %w", err)
 	}

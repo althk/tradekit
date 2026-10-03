@@ -11,6 +11,7 @@ import (
 
 	"github.com/althk/tradekit/go/core/domain"
 	"github.com/althk/tradekit/go/core/money"
+	"github.com/althk/tradekit/go/core/stats"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/report.golden.html from the current renderer")
@@ -100,6 +101,18 @@ func TestBuildGroupsByExitReasonWithTheSameArithmetic(t *testing.T) {
 	}
 	if report.ByReason[domain.ExitTarget].Trades != 2 {
 		t.Errorf("two target exits expected, got %d", report.ByReason[domain.ExitTarget].Trades)
+	}
+}
+
+func TestBuildMeasuresDrawdownPercentAgainstTheOpening(t *testing.T) {
+	report, err := Build(sampleSpec(), sampleTrades(), sampleCurve())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, want := stats.MaxDrawdown(report.ClosedCurve)
+	if want == 0 || report.Metrics.MaxDrawdownPct != want {
+		t.Errorf("headline drawdown %% should match the closed curve from the opening balance (%v), got %v; "+
+			"plain Summarize leaves it at zero", want, report.Metrics.MaxDrawdownPct)
 	}
 }
 

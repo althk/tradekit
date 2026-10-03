@@ -165,3 +165,23 @@ func TestWindowsRollWithoutOverlapAndAnchorToDates(t *testing.T) {
 		t.Error("degenerate inputs yield nothing rather than looping")
 	}
 }
+
+func TestCasesACancelledSweepNeverRanCarryAnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	all := cases(10)
+	var started atomic.Int32
+	results, _ := (&Sweep{Workers: 1}).Run(ctx, all, func(context.Context, Case) ([]domain.Trade, []stats.Point, error) {
+		if started.Add(1) == 2 {
+			cancel()
+		}
+		return nil, nil, nil
+	})
+	for i, r := range results {
+		if r.Case.Label != all[i].Label {
+			t.Errorf("result %d has case %q, want %q", i, r.Case.Label, all[i].Label)
+		}
+		if i >= int(started.Load()) && r.Err == nil {
+			t.Errorf("case %q never ran but reports no error: it reads as a run with no trades", r.Case.Label)
+		}
+	}
+}

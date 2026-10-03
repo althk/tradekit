@@ -59,6 +59,14 @@ func (r *Replay) Run(ctx context.Context, fn OnBar) error {
 
 		r.Clock.Advance(c.Start)
 		r.Broker.OnBar(c)
+		// The strategy sees the completed bar, close included, so its clock
+		// reads the bar's end. Left at the start, a time gate such as "no
+		// entries after 15:15" would pass a decision made on the 15:10-15:15
+		// bar's 15:15 close. A daily bar has no fixed end here and keeps its
+		// start.
+		if d := c.Timeframe.Duration(); d > 0 {
+			r.Clock.Advance(c.Start.Add(d))
+		}
 		if err := fn(ctx, c); err != nil {
 			return err
 		}

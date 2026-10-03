@@ -87,7 +87,7 @@ func (r *Recorder) Save(ctx context.Context, spec RunSpec, trades []domain.Trade
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := store.FormatTime(time.Now())
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO runs (kind, name, params, started_at, ended_at, status) VALUES ('backtest', ?, ?, ?, ?, 'ok')`,
 		spec.Name, string(encoded), now, now)
@@ -142,4 +142,4 @@ func (r *Recorder) Save(ctx context.Context, spec RunSpec, trades []domain.Trade
 
 // formatTime matches the store's timestamp encoding, so rows written here read
 // back through store.Trades and store.EquityCurve.
-func formatTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
+func formatTime(t time.Time) string { return store.FormatTime(t) }

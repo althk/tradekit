@@ -140,3 +140,28 @@ func TestReplayNeedsItsCollaborators(t *testing.T) {
 		t.Error("a replay with no clock, feed or broker must refuse to run")
 	}
 }
+
+func TestTheStrategySeesAnIntradayBarAtItsEnd(t *testing.T) {
+	start := time.Date(2025, 4, 14, 15, 10, 0, 0, ist)
+	p := money.MustParse("100.00")
+	candles := []domain.Candle{{
+		Key: reliance, Timeframe: domain.M5, Start: start,
+		Open: p, High: p, Low: p, Close: p, Volume: 1,
+	}}
+	r, broker := newReplay(candles)
+	err := r.Run(t.Context(), func(ctx context.Context, c domain.Candle) error {
+		if now := r.Clock.Now(); !now.Equal(start.Add(5 * time.Minute)) {
+			t.Errorf("clock = %s, want 15:15: a decision on this bar's close was made when it closed", now.Format("15:04"))
+		}
+		order, err := broker.PlaceOrder(ctx, domain.OrderRequest{
+			Key: reliance, Side: domain.Buy, Type: domain.Market, Quantity: 1, Product: domain.CNC,
+		})
+		if err == nil && !order.PlacedAt.Equal(start.Add(5*time.Minute)) {
+			t.Errorf("order placed at %s, want 15:15, when the close it filled at existed", order.PlacedAt.Format("15:04"))
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

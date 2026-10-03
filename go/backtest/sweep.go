@@ -77,6 +77,12 @@ func (s *Sweep) Run(ctx context.Context, cases []Case, fn RunFn) ([]Result, erro
 	}
 
 	results := make([]Result, len(cases))
+	for i, c := range cases {
+		// A case the sweep never reached keeps this, so a cancelled sweep
+		// cannot hand back an empty, error-free result that reads as a run
+		// with no trades.
+		results[i] = Result{Case: c, Err: fmt.Errorf("backtest: case %q not run: sweep cancelled", c.Label)}
+	}
 	indices := make(chan int)
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
@@ -144,6 +150,10 @@ type Window struct {
 // training window is [TrainFrom, TrainTo), the test window [TestFrom, TestTo)
 // starting where training ends, so the two never overlap. Windows are produced
 // while the whole test period fits inside [from, to].
+//
+// The bounds are half-open but store.Candles and FromStore include both ends,
+// so query training data up to TrainTo minus one bar: passing TrainTo itself
+// hands the training run the first out-of-sample bar.
 func Windows(from, to time.Time, trainDays, testDays, stepDays int) []Window {
 	if trainDays <= 0 || testDays <= 0 || stepDays <= 0 || !to.After(from) {
 		return nil
