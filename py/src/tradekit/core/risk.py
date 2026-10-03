@@ -14,6 +14,7 @@ visible at the call site.
 
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -424,8 +425,15 @@ def trail(side: Side, current: Money, extreme: Money, atr_value: float, mult: fl
     The stop is monotonic -- it never moves against the position. Every trailing
     implementation this replaces had to state that separately, and one of them
     enforced it only for longs.
+
+    An ATR that is NaN (still warming up) or not positive leaves the stop where
+    it is, matching the Go implementation, where converting NaN to an integer is
+    undefined.
     """
-    offset = money._round_half_away(atr_value * mult)
+    width = atr_value * mult
+    if not math.isfinite(width) or width <= 0:
+        return current
+    offset = money._round_half_away(width)
     if side is Side.BUY:
         candidate = int(extreme) - offset
         return Money(candidate) if candidate > int(current) else current

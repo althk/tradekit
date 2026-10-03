@@ -383,8 +383,16 @@ func (g TradingWindow) Check(_ context.Context, sig domain.Signal, _ DailyState)
 // The stop is monotonic — it never moves against the position. Every trailing
 // implementation this replaces had to state that separately, and one of them
 // only enforced it for longs.
+//
+// An ATR that is NaN (still warming up) or not positive leaves the stop where it
+// is. Converting NaN to an integer is undefined in Go, and on amd64 it yields a
+// huge negative offset that silently removes a short's stop.
 func Trail(side domain.Side, current, extreme money.Money, atr float64, mult float64) money.Money {
-	offset := money.Money(math.Round(atr * mult))
+	width := atr * mult
+	if math.IsNaN(width) || math.IsInf(width, 0) || width <= 0 {
+		return current
+	}
+	offset := money.Money(math.Round(width))
 	if side == domain.Buy {
 		if candidate := extreme - offset; candidate > current {
 			return candidate

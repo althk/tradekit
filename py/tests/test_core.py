@@ -760,3 +760,12 @@ def test_bucket_start_weekly_is_monday() -> None:
 def test_in_session_excludes_the_closing_minute() -> None:
     assert nse().in_session(_at(15, 30))
     assert not nse().in_session(_at(15, 30) + dt.timedelta(seconds=45))
+
+
+def test_trail_ignores_a_warming_up_atr() -> None:
+    from tradekit.core.risk import trail
+
+    stop = money.parse("510.00")
+    for side in (Side.BUY, Side.SELL):
+        assert trail(side, stop, money.parse("500.00"), math.nan, 2) == stop
+        assert trail(side, stop, money.parse("500.00"), 0.0, 2) == stop

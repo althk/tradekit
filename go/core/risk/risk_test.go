@@ -3,6 +3,7 @@ package risk
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -321,4 +322,16 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestTrailIgnoresAWarmingUpATR(t *testing.T) {
+	stop := money.MustParse("510.00")
+	for _, side := range []domain.Side{domain.Buy, domain.Sell} {
+		if got := Trail(side, stop, money.MustParse("500.00"), math.NaN(), 2); got != stop {
+			t.Errorf("%s trail with NaN ATR = %s, want the stop left at %s", side, got, stop)
+		}
+		if got := Trail(side, stop, money.MustParse("500.00"), 0, 2); got != stop {
+			t.Errorf("%s trail with zero ATR = %s, want the stop left at %s", side, got, stop)
+		}
+	}
 }
