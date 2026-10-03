@@ -55,7 +55,14 @@ func NewBuilder(s calendar.Session, tf domain.Timeframe, emit func(domain.Candle
 // is folded into the current bar rather than opening an earlier one. A feed
 // that reorders across a bucket boundary would otherwise emit a bar, then
 // re-open it, and the consumer would see the same bucket twice.
+//
+// A tick at or after the close is dropped from an intraday chain. NSE prints
+// through its post-close session, and folding those prints in would open a
+// 15:30 bar the exchange's own chain does not have.
 func (b *Builder) Add(tick domain.Tick) {
+	if b.timeframe.Intraday() && !tick.At.Before(b.session.Close(tick.At)) {
+		return
+	}
 	start := b.session.BucketStart(tick.At, b.timeframe)
 
 	if b.open && start.After(b.current.Start) {

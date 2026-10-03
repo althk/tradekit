@@ -913,3 +913,38 @@ def test_frames_round_trip_when_pandas_is_installed() -> None:
     assert frames.from_frame(frame, RELIANCE, Timeframe.M5) == series, "prices must survive the float round trip"
     with pytest.raises(ValueError, match="timezone-aware"):
         frames.from_frame(frame.tz_localize(None), RELIANCE, Timeframe.M5)
+
+
+def test_builder_drops_post_close_ticks() -> None:
+    s, opening = _session()
+    emitted: list[Candle] = []
+    b = bars.Builder(s, Timeframe.M5, emitted.append)
+    closing = opening + dt.timedelta(minutes=375)
+    b.add(Tick(RELIANCE, closing - dt.timedelta(minutes=1), money.parse("100.00"), 10))
+    b.add(Tick(RELIANCE, closing, money.parse("90.00"), 99))
+    b.add(Tick(RELIANCE, closing + dt.timedelta(minutes=10), money.parse("80.00"), 99))
+    b.flush()
+    assert len(emitted) == 1, "a post-close print opened a phantom bar"
+    assert emitted[0].close == money.parse("100.00") and emitted[0].volume == 10
+
+
+def test_resample_daily_to_weekly() -> None:
+    s = calendar.nse()
+    monday = dt.datetime(2025, 4, 14, tzinfo=s.tz)
+    daily = [
+        Candle(
+            key=RELIANCE,
+            timeframe=Timeframe.D1,
+            start=monday + dt.timedelta(days=i + 2 * (i // 5)),
+            open=Money(100 + i),
+            high=Money(200 + i),
+            low=Money(50 + i),
+            close=Money(150 + i),
+            volume=1,
+        )
+        for i in range(10)
+    ]
+    out = bars.resample(daily, Timeframe.W1, s)
+    assert len(out) == 2, "weekly resampling produced daily bars"
+    assert out[0].volume == 5 and out[0].close == 154
+    assert out[1].start == monday + dt.timedelta(days=7)

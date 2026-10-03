@@ -57,7 +57,13 @@ class Builder:
         one. A feed that reorders across a bucket boundary would otherwise emit
         a bar, then re-open it, and the consumer would see the same bucket
         twice.
+
+        A tick at or after the close is dropped from an intraday chain. NSE
+        prints through its post-close session, and folding those prints in would
+        open a 15:30 bar the exchange's own chain does not have.
         """
+        if self._timeframe.intraday and tick.at >= self._session.close(tick.at):
+            return
         start = self._session.bucket_start(tick.at, self._timeframe)
         if self._current is not None and start > self._current.start:
             self._close()

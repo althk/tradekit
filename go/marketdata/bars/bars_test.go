@@ -311,3 +311,46 @@ func TestRelativeVolumeDoublesWithTwiceTheVolume(t *testing.T) {
 		t.Errorf("twice the usual volume by this point in the day is 2.0, got %v", got)
 	}
 }
+
+func TestBuilderDropsPostCloseTicks(t *testing.T) {
+	s, open := session(t)
+	var emitted []domain.Candle
+	b := NewBuilder(s, domain.M5, func(c domain.Candle) { emitted = append(emitted, c) })
+	closing := open.Add(375 * time.Minute) // 15:30
+	b.Add(domain.Tick{Key: reliance, At: closing.Add(-time.Minute), Price: money.MustParse("100.00"), Volume: 10})
+	b.Add(domain.Tick{Key: reliance, At: closing, Price: money.MustParse("90.00"), Volume: 99})
+	b.Add(domain.Tick{Key: reliance, At: closing.Add(10 * time.Minute), Price: money.MustParse("80.00"), Volume: 99})
+	b.Flush()
+	if len(emitted) != 1 {
+		t.Fatalf("emitted %d bars, want only the 15:25 bar: a post-close print opened a phantom bar", len(emitted))
+	}
+	if emitted[0].Close != money.MustParse("100.00") || emitted[0].Volume != 10 {
+		t.Errorf("last bar = %s / %d, want the 100.00 close and 10 volume untouched by post-close prints",
+			emitted[0].Close, emitted[0].Volume)
+	}
+}
+
+func TestResampleDailyToWeekly(t *testing.T) {
+	s := calendar.NSE()
+	monday := time.Date(2025, 4, 14, 0, 0, 0, 0, s.Location)
+	var daily []domain.Candle
+	for i := range 10 { // two Monday-to-Friday weeks, weekends skipped
+		day := monday.AddDate(0, 0, i+2*(i/5))
+		daily = append(daily, domain.Candle{
+			Key: reliance, Timeframe: domain.D1, Start: day,
+			Open: money.Money(100 + i), High: money.Money(200 + i), Low: money.Money(50 + i),
+			Close: money.Money(150 + i), Volume: 1,
+		})
+	}
+	out, err := Resample(daily, domain.W1, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %d weekly bars from two weeks of dailies, want 2", len(out))
+	}
+	if !out[1].Start.Equal(monday.AddDate(0, 0, 7)) || out[0].Volume != 5 || out[0].Close != 154 {
+		t.Errorf("week 1 = %+v, week 2 starts %s; want five days summed, closing at Friday's 154, second on the next Monday",
+			out[0], out[1].Start)
+	}
+}
