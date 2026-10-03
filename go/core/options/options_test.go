@@ -95,3 +95,12 @@ func TestYearsToExpiryMeasuresToTheClose(t *testing.T) {
 		t.Errorf("time past expiry gave %v, want a positive floor", v)
 	}
 }
+
+func TestZeroVolatilityPricesTheDiscountedForward(t *testing.T) {
+	m := Model{RiskFree: 0.065, DivYield: 0.012}
+	s, k, years := 24300.0, 24000.0, 0.25
+	want := s*math.Exp(-0.012*years) - k*math.Exp(-0.065*years)
+	if got := m.Price(s, k, years, 0, true); math.Abs(got-want) > 1e-9 {
+		t.Errorf("Price(sigma=0) = %v, want the discounted forward intrinsic %v, not spot minus strike", got, want)
+	}
+}

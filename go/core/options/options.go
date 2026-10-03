@@ -85,8 +85,14 @@ func (m Model) d1(s, k, t, sigma float64) float64 {
 
 // Price values a European call or put on an index.
 func (m Model) Price(s, k, t, sigma float64, isCall bool) float64 {
-	if t <= 0 || sigma <= 0 || s <= 0 || k <= 0 {
+	if t <= 0 || s <= 0 || k <= 0 {
 		return math.Max(0, intrinsic(s, k, isCall))
+	}
+	if sigma <= 0 {
+		// No volatility leaves the forward as the only outcome: the
+		// intrinsic value of S*e^(-qT) against K*e^(-rT), not of spot
+		// against strike, which ignores carry for the time remaining.
+		return math.Max(0, intrinsic(s*math.Exp(-m.DivYield*t), k*math.Exp(-m.RiskFree*t), isCall))
 	}
 	a := m.d1(s, k, t, sigma)
 	b := a - sigma*math.Sqrt(t)
@@ -168,7 +174,14 @@ func (m Model) StrikeForDelta(s, t, sigma, target float64, isCall bool) float64 
 	if sigma <= 0 || target <= 0 || target >= 1 {
 		return s
 	}
-	z := normInvCDF(target)
+	// Delta carries e^(-qT): a call's is e^(-qT)*N(d1). Solving N(d1) for the
+	// target without it places the strike for a slightly larger delta
+	// whenever the index pays a dividend yield.
+	adjusted := target * math.Exp(m.DivYield*t)
+	if adjusted >= 1 {
+		return s
+	}
+	z := normInvCDF(adjusted)
 	if !isCall {
 		z = -z
 	}

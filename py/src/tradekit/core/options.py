@@ -96,8 +96,13 @@ class Model:
 
     def price(self, s: float, k: float, t: float, sigma: float, is_call: bool) -> float:
         """Value a European call or put on an index."""
-        if t <= 0 or sigma <= 0 or s <= 0 or k <= 0:
+        if t <= 0 or s <= 0 or k <= 0:
             return max(0.0, _intrinsic(s, k, is_call))
+        if sigma <= 0:
+            # No volatility leaves the forward as the only outcome: the
+            # intrinsic value of S*e^(-qT) against K*e^(-rT), not of spot
+            # against strike, which ignores carry for the time remaining.
+            return max(0.0, _intrinsic(s * math.exp(-self.div_yield * t), k * math.exp(-self.risk_free * t), is_call))
         a = self._d1(s, k, t, sigma)
         b = a - sigma * math.sqrt(t)
         df_r, df_q = math.exp(-self.risk_free * t), math.exp(-self.div_yield * t)
@@ -151,7 +156,13 @@ class Model:
         t = max(t, MIN_YEARS)
         if sigma <= 0 or target <= 0 or target >= 1:
             return s
-        z = _norm_inv_cdf(target)
+        # Delta carries e^(-qT): a call's is e^(-qT)*N(d1). Solving N(d1) for
+        # the target without it places the strike for a slightly larger delta
+        # whenever the index pays a dividend yield.
+        adjusted = target * math.exp(self.div_yield * t)
+        if adjusted >= 1:
+            return s
+        z = _norm_inv_cdf(adjusted)
         if not is_call:
             z = -z
         return s * math.exp(-z * sigma * math.sqrt(t) + (self.risk_free - self.div_yield + sigma * sigma / 2) * t)
