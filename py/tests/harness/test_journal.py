@@ -80,7 +80,7 @@ def test_parity_journal_detail_encoding(db: Database) -> None:
     Journal(db).record(decision)
     row = db.conn.execute("SELECT * FROM decisions").fetchone()
     assert row["detail_json"] == block["want_detail_json"]
-    assert row["at"] == "2025-04-17T09:20:00+05:30", "the timestamp column is ISO-8601 with its offset, as Go writes it"
+    assert row["at"] == block["want_at"], "the timestamp column is the canonical UTC form Go writes too"
     assert (row["run_id"], row["exchange"], row["symbol"], row["action"], row["reason"]) == (
         7,
         "NSE",

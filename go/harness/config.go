@@ -50,10 +50,18 @@ func (Secret) MarshalJSON() ([]byte, error) { return json.Marshal(Redaction) }
 
 // UnmarshalJSON reads the real value, so a secret can arrive through JSON as
 // well as TOML.
+//
+// The redaction marker itself is refused. A config that was serialised (which
+// writes the marker) and then loaded back would otherwise carry "<redacted>"
+// as its credential, pass every "is it set" check, and fail at the broker with
+// an authentication error that names nothing.
 func (s *Secret) UnmarshalJSON(raw []byte) error {
 	var v string
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return err
+	}
+	if v == Redaction {
+		return fmt.Errorf("harness: refusing to load the redaction marker %q as a secret; supply the real value", Redaction)
 	}
 	*s = Secret(v)
 	return nil
@@ -242,7 +250,39 @@ func Redacted(cfg any) string {
 	return strings.Join(parts, " ")
 }
 
-var secretType = reflect.TypeOf(Secret(""))
+var (
+	secretType = reflect.TypeOf(Secret(""))
+	timeType   = reflect.TypeOf(time.Time{})
+)
+
+// containsSecret reports whether a value of type t can hold a Secret anywhere
+// inside it.
+func containsSecret(t reflect.Type) bool {
+	return containsSecretSeen(t, map[reflect.Type]bool{})
+}
+
+func containsSecretSeen(t reflect.Type, seen map[reflect.Type]bool) bool {
+	if t == secretType {
+		return true
+	}
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return containsSecretSeen(t.Elem(), seen)
+	case reflect.Map:
+		return containsSecretSeen(t.Key(), seen) || containsSecretSeen(t.Elem(), seen)
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if containsSecretSeen(t.Field(i).Type, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func render(v reflect.Value, prefix string, parts *[]string) {
 	t := v.Type()
@@ -258,10 +298,27 @@ func render(v reflect.Value, prefix string, parts *[]string) {
 			fv = fv.Elem()
 		}
 		switch {
-		case fv.Type() == secretType:
-			*parts = append(*parts, name+"="+Redaction)
+		case containsSecret(fv.Type()):
+			// A Secret inside a slice, map or array is masked whole: fmt
+			// cannot call String on an unexported field's elements, and
+			// would print the raw credential.
+			if fv.Type() == secretType {
+				*parts = append(*parts, name+"="+Redaction)
+			} else if fv.Kind() == reflect.Struct {
+				render(fv, name+".", parts)
+			} else {
+				*parts = append(*parts, name+"=["+Redaction+"]")
+			}
 		case fv.Type() == durationType:
 			*parts = append(*parts, name+"="+time.Duration(fv.Int()).String())
+		case fv.Type() == timeType:
+			// Walked as a struct, a time prints its internal wall/ext
+			// fields. Its methods are reachable only on an exported field.
+			if fv.CanInterface() {
+				*parts = append(*parts, name+"="+fv.Interface().(time.Time).Format(time.RFC3339))
+			} else {
+				*parts = append(*parts, name+"=<time>")
+			}
 		case fv.Kind() == reflect.Struct:
 			render(fv, name+".", parts)
 		default:

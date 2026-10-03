@@ -2017,10 +2017,12 @@
         },
         "count": 3,
         "price": 1250.5,
+        "whole": 2.0,
         "note": "a<b & c, \u20b91,000"
       }
     },
-    "want_detail_json": "{\"alpha\":{\"b\":null,\"nested\":[1,2,\"three\"]},\"count\":3,\"note\":\"a<b & c, \u20b91,000\",\"price\":1250.5,\"zeta\":true}"
+    "want_detail_json": "{\"alpha\":{\"b\":null,\"nested\":[1,2,\"three\"]},\"count\":3,\"note\":\"a<b & c, \u20b91,000\",\"price\":1250.5,\"whole\":2,\"zeta\":true}",
+    "want_at": "2025-04-17T03:50:00.000000Z"
   },
   "options": {
     "_comment": "Black-Scholes with the carry terms zerobha runs. Tolerance 1e-6 relative; the IV inversion stops at 1e-6 absolute.",

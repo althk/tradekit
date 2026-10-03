@@ -197,3 +197,14 @@ func TestBrowserLoginFailsFastOnABadRedirectURLOrABusyPort(t *testing.T) {
 		t.Fatalf("err = %v; a port in use must fail immediately, not wait for a callback that cannot arrive", err)
 	}
 }
+
+func TestALocalRedirectIsServedOnLoopbackOnly(t *testing.T) {
+	for host, want := range map[string]bool{
+		"localhost": true, "127.0.0.1": true, "::1": true,
+		"bot.example.com": false, "192.168.1.10": false,
+	} {
+		if got := isLoopback(host); got != want {
+			t.Errorf("isLoopback(%q) = %v, want %v: a local redirect must not open the callback to the network", host, got, want)
+		}
+	}
+}

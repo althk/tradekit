@@ -31,9 +31,12 @@ type Callback struct {
 	// separate host, port and path that could drift apart.
 	RedirectURL string
 
-	// ListenAddr overrides the address the server binds. Empty binds every
-	// interface on RedirectURL's port. Set it when the registered URL is a
-	// public name that a proxy or tunnel forwards to a different local port.
+	// ListenAddr overrides the address the server binds. Empty binds
+	// RedirectURL's own host when that is a loopback address (localhost,
+	// 127.0.0.1, ::1), so a login callback is not reachable from the network,
+	// and every interface on its port otherwise. Set it when the registered
+	// URL is a public name that a proxy or tunnel forwards to a different
+	// local port.
 	ListenAddr string
 }
 
@@ -66,7 +69,11 @@ func BrowserLogin(ctx context.Context, broker ports.BrowserLogin, cb Callback) (
 		if port == "" {
 			port = "80"
 		}
-		addr = ":" + port
+		host := ""
+		if isLoopback(target.Hostname()) {
+			host = target.Hostname()
+		}
+		addr = net.JoinHostPort(host, port)
 	}
 
 	// Bind before announcing the URL so a port already in use fails here,
@@ -147,6 +154,11 @@ func (s *loginSession) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token, err := s.broker.LoginCallback(s.ctx, r.URL.Query())
+	if err == nil && token == "" {
+		// Treated as a failure: an empty token would end the wait with
+		// nothing installed, and leave done open to be closed twice.
+		err = errors.New("login: the broker returned an empty access token")
+	}
 	if err != nil {
 		s.lastErr = err
 		slog.Warn("broker login callback failed; waiting for another attempt", "err", err)
@@ -157,6 +169,15 @@ func (s *loginSession) handle(w http.ResponseWriter, r *http.Request) {
 	s.token = token
 	close(s.done)
 	writePage(w, http.StatusOK, "Login successful", "You can close this tab.", "")
+}
+
+// isLoopback reports whether host names this machine only.
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // writePage renders the one-line result page the user sees in the browser.

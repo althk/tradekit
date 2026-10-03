@@ -146,3 +146,9 @@ def test_fails_fast_on_a_bad_redirect_url_or_a_busy_port() -> None:
         host, port = busy.getsockname()
         with pytest.raises(OSError):
             browser_login(FakeBroker(), Callback(f"http://{host}:{port}/cb", listen_addr=(host, port)), timeout=5)
+
+
+def test_a_local_redirect_is_served_on_loopback_only() -> None:
+    assert Callback("http://127.0.0.1:8080/cb").listen_addr == ("127.0.0.1", 8080)
+    assert Callback("http://localhost:8080/cb").listen_addr == ("localhost", 8080)
+    assert Callback("https://bot.example.com/cb").listen_addr == ("", 80), "a public name binds every interface"

@@ -255,3 +255,29 @@ func TestRedactedMasksUnexportedSecretsToo(t *testing.T) {
 		t.Errorf("Redacted must still show the non-secret fields by path: %s", out)
 	}
 }
+
+func TestRedactedMasksSecretsInsideUnexportedCollections(t *testing.T) {
+	type cfg struct {
+		Started time.Time
+		tokens  []Secret
+		byName  map[string]Secret
+	}
+	out := Redacted(cfg{
+		Started: time.Date(2026, 1, 15, 9, 15, 0, 0, time.UTC),
+		tokens:  []Secret{"raw-token-1"},
+		byName:  map[string]Secret{"kite": "raw-token-2"},
+	})
+	if strings.Contains(out, "raw-token") {
+		t.Fatalf("Redacted leaked a credential from an unexported collection: %s", out)
+	}
+	if !strings.Contains(out, "2026-01-15T09:15:00Z") {
+		t.Errorf("a time must render as a time, not its internal fields: %s", out)
+	}
+}
+
+func TestARedactedSecretIsNotLoadedAsACredential(t *testing.T) {
+	var s Secret
+	if err := json.Unmarshal([]byte(`"`+Redaction+`"`), &s); err == nil {
+		t.Errorf("loaded %q as a secret: a saved-and-reloaded config would carry the marker as its token", s.Reveal())
+	}
+}

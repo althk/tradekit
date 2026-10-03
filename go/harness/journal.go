@@ -53,7 +53,7 @@ func (j *Journal) Record(ctx context.Context, d Decision) error {
 	_, err = j.DB.SQL().ExecContext(ctx, `
 		INSERT INTO decisions (run_id, at, exchange, symbol, action, reason, detail_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		d.RunID, d.At.Format(time.RFC3339Nano), d.Key.Exchange, d.Key.Symbol, d.Action, d.Reason, detail)
+		d.RunID, store.FormatTime(d.At), d.Key.Exchange, d.Key.Symbol, d.Action, d.Reason, detail)
 	if err != nil {
 		return fmt.Errorf("harness: recording decision: %w", err)
 	}
@@ -68,7 +68,7 @@ func (j *Journal) Since(ctx context.Context, runID int64, from time.Time) ([]Dec
 	rows, err := j.DB.SQL().QueryContext(ctx, `
 		SELECT at, exchange, symbol, action, reason, detail_json
 		FROM decisions WHERE run_id = ? AND at >= ? ORDER BY at, id`,
-		runID, from.Format(time.RFC3339Nano))
+		runID, store.FormatTime(from))
 	if err != nil {
 		return nil, fmt.Errorf("harness: reading decisions: %w", err)
 	}

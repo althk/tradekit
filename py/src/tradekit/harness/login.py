@@ -13,6 +13,7 @@ milliseconds, and must not depend on whatever web framework the project runs.
 from __future__ import annotations
 
 import html
+import ipaddress
 import logging
 import threading
 import urllib.parse
@@ -43,9 +44,11 @@ class Callback:
             registered value character for character, so it is taken whole
             rather than as separate host, port and path that could drift apart.
         listen_addr: Overrides the ``(host, port)`` the server binds. ``None``
-            binds every interface on ``redirect_url``'s port. Set it when the
-            registered URL is a public name that a proxy or tunnel forwards to
-            a different local port.
+            binds ``redirect_url``'s own host when that is a loopback address
+            (localhost, 127.0.0.1, ::1), so a login callback is not reachable
+            from the network, and every interface on its port otherwise. Set it
+            when the registered URL is a public name that a proxy or tunnel
+            forwards to a different local port.
 
     """
 
@@ -55,7 +58,18 @@ class Callback:
             raise ValueError(f"login: redirect_url {redirect_url!r} is not an absolute URL")
         self.redirect_url = redirect_url
         self.path = parsed.path or "/"
-        self.listen_addr = listen_addr or ("", parsed.port or 80)
+        host = parsed.hostname or ""
+        self.listen_addr = listen_addr or (host if _is_loopback(host) else "", parsed.port or 80)
+
+
+def _is_loopback(host: str) -> bool:
+    """Whether ``host`` names this machine only."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class _Server(HTTPServer):
@@ -118,7 +132,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
             try:
-                srv.token = srv.broker.login_callback(query)
+                token = srv.broker.login_callback(query)
+                if not token:
+                    # An empty token would end the wait with nothing installed.
+                    raise RuntimeError("login: the broker returned an empty access token")
+                srv.token = token
             except Exception as exc:  # whatever the broker raised is the message
                 srv.last_error = exc
                 log.warning("broker login callback failed; waiting for another attempt: %s", exc)

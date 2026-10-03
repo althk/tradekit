@@ -116,6 +116,7 @@ type journalFixture struct {
 			Detail   map[string]any `json:"detail"`
 		} `json:"decision"`
 		WantDetailJSON string `json:"want_detail_json"`
+		WantAt         string `json:"want_at"`
 	} `json:"journal"`
 }
 
@@ -153,8 +154,8 @@ func TestParityJournalDetailEncoding(t *testing.T) {
 	if stored != f.Journal.WantDetailJSON {
 		t.Errorf("the stored column must carry the canonical encoding, got %s", stored)
 	}
-	if at != "2025-04-17T09:20:00+05:30" {
-		t.Errorf("the timestamp column must be ISO-8601 with its offset, as the Python store writes it; got %q", at)
+	if at != f.Journal.WantAt {
+		t.Errorf("the timestamp column must be the canonical UTC form the Python store writes too; got %q want %q", at, f.Journal.WantAt)
 	}
 }
 

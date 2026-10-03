@@ -53,7 +53,22 @@ def encode_detail(detail: dict[str, Any]) -> str:
     """
     if not detail:
         return "{}"
-    return json.dumps(detail, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(_integral_floats(detail), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _integral_floats(value: Any) -> Any:
+    """Render a whole-number float as Go does.
+
+    Go's encoder writes float64(1) as ``1``; Python's writes ``1.0``. Converting
+    integral floats to int before encoding is what keeps the bytes identical.
+    """
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e21:
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _integral_floats(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_integral_floats(v) for v in value]
+    return value
 
 
 class Journal:
