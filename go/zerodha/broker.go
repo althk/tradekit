@@ -104,6 +104,10 @@ func (c *Client) orderParams(req domain.OrderRequest) (kiteconnect.OrderParams, 
 	// which is what a market order requires and what a limit order must not
 	// have, hence the checks below rather than blind assignment.
 	switch req.Type {
+	case domain.Market:
+		// Kite rejects API market orders without market protection; auto
+		// lets the exchange cap the fill at its own price band.
+		params.MarketProtection = kiteconnect.MarketProtectionAuto
 	case domain.Limit:
 		if req.LimitPrice <= 0 {
 			return kiteconnect.OrderParams{}, fmt.Errorf("zerodha: a limit order needs a limit price")
